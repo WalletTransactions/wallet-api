@@ -1,0 +1,1384 @@
+openapi: 3.1.0
+info:
+  title: wallet-api
+  version: "1.0.0"
+  description: |
+    Домен леджера/синка (`org/docs/TODO_mobile_sync.md`, Фаза 2) + демо-CRUD
+    кошельков. Своя Postgres-база, токен не выпускает и не ротирует — только
+    проверяет JWT по JWKS `google-auth` (см. `wallet-api/README.md`).
+
+    В проде запросы идут через `wallet-gateway` (порт 8090, префиксы
+    `/api/*` и `/sync/*`) — гейтвей уже отсёк запросы без синтаксически
+    валидного токена (грубая проверка подписи+`exp`), но саму авторизацию
+    (чей это кошелёк, есть ли claim `device_id`) всё равно делает этот
+    сервис. Ниже — прямой адрес самого сервиса.
+servers:
+  - url: http://localhost:8082
+    description: Прямой адрес сервиса (по умолчанию, см. .env.example — PORT)
+
+tags:
+  - name: sync
+    description: Офлайн-first синхронизация SQLite-клиента (Android) с сервером
+  - name: blobs
+    description: Контент-адресуемое хранилище содержимого иконок (SHA-256) — отдельно от push/pull
+  - name: ledger
+    description: |
+      Доступ и приглашения (org/docs/TODO_mobile_sync.md, Фаза 6) — участники
+      леджера, приглашение по одноразовой ссылке, передача владения.
+      `ledger_id` нигде не принимается от клиента (тот же принцип, что у
+      `/sync/*`) — резолвится из леджера текущего пользователя, MVP — один
+      леджер на пользователя.
+  - name: currency-pairs
+    description: |
+      "Курсы валют" (веб-аналог Android CurrencyPairListActivity/
+      CurrencyPairRateListActivity/RateEditDialog) — просмотр валютных пар и
+      истории их курса, добавление/изменение/удаление пары и её курса.
+      `currency_pair`/`currency_pair_rate` — та же область видимости, что и у
+      справочников синка (`ledger_id IS NULL` — общее, видно всем; заполнено
+      — личная копия леджера): веб всегда СОЗДАЁТ личные строки, править/
+      удалять можно тоже только свои — общие видны, но read-only для этого
+      API. `ledger_id` нигде не принимается от клиента (тот же принцип, что
+      у `/sync/*`/`/api/ledger/*`).
+  - name: account
+    description: |
+      Самообслуживание — "Удалить аккаунт" (настройки wallet-web). Отдельно
+      от `ledger` выше: та группа про ДОСТУП к общему леджеру, эта — про
+      удаление ВСЕГО присутствия пользователя в этой базе разом.
+  - name: docs
+    description: "Отдача этой самой спеки и Swagger UI поверх неё (src/docs.cpp) — не часть API, чисто мета"
+
+paths:
+  /docs:
+    get:
+      operationId: docs
+      summary: "Swagger UI поверх /openapi.yaml (эта самая страница)"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: HTML-страница Swagger UI (вендоренный статический бандл, см. third_party/swagger-ui/README.md)
+          content:
+            text/html: {schema: {type: string}}
+
+  /openapi.yaml:
+    get:
+      operationId: openApiYaml
+      summary: "Эта самая спецификация — файл рядом с исполняемым файлом, отдаётся как есть"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Текст этого файла
+          content:
+            application/yaml: {schema: {type: string}}
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: "Liveness для docker/podman compose healthcheck (см. wallet-infra/compose.yaml)"
+      description: |
+        Проверяет только то, что сам процесс жив и обслуживает HTTP — не
+        Postgres (см. src/docs.cpp, почему нарочно не проверяет).
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Сервис жив
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+
+  /version:
+    get:
+      operationId: version
+      summary: "Версия ЭТОГО билда — проставляется на сборке (см. CMakeLists.txt, VERSION)"
+      description: |
+        `version` — semver из файла `VERSION` рядом с `CMakeLists.txt`;
+        `git_commit` — короткий хэш коммита на момент сборки (`unknown`, если
+        собрано без git — например, вручную без `--build-arg GIT_COMMIT`, см.
+        Containerfile). Та же тройка полей — в `build_info` внутри
+        `GET /metrics` (см. `infra/monitoring`), здесь — для человека и curl
+        без PromQL.
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Версия и git-хэш текущего билда
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: {type: string, example: wallet-api}
+                  version: {type: string, example: "0.1.0"}
+                  git_commit: {type: string, example: "a1b2c3d4"}
+
+  /sync/push:
+    post:
+      operationId: syncPush
+      summary: Отправить локальные (offline-first) изменения одним батчем
+      description: |
+        Один вызов — одна транзакция на сервере и один `seq` для ВСЕХ строк
+        ВСЕХ таблиц в `changes` (см. `wallet-api/schema/README.md`, "Курсор и
+        страницы"). Идемпотентность — по `batch_id`: повторная отправка того
+        же `batch_id` возвращает СОХРАНЁННЫЙ ответ, ничего не применяя
+        заново (в кэш кладётся только успешный исход — конфликт
+        пересчитывается заново на каждый повтор).
+
+        `ledger_id`/`seq` клиент никогда не присылает — сервер подставляет
+        их сам (аутентифицированный `ledger_id` из провизионирования,
+        `seq` — один вызов `next_seq()` на весь батч). Мягкое удаление — не
+        отдельный метод, а поле `"deleted": true` в самой строке.
+
+        `icon` — обычная таблица в `changes` (метаданные: name/icon_type/
+        content_sha256), но само СОДЕРЖИМОЕ (байты) сюда не входит — см.
+        `POST /sync/blobs`/`GET /sync/blobs/{sha256}` ниже. Строка,
+        ссылающаяся на неизвестный сервису `icon_uuid`/`content_sha256`,
+        получит `409 missing_reference`.
+
+        Нужен scope `wallet:write` — или `expense:write` (токен
+        Telegram-бота, `org/docs/TODO_telegram_tokens.md`, «Скоупы»): тогда в
+        `changes` только `operation`, только новые строки (uuid, которого у
+        леджера ещё нет) и без `"deleted": true`; иначе `403`, батч не
+        применяется. Читатель леджера (`reader`) с таким токеном — тоже `403`.
+      tags: [sync]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                batch_id:
+                  type: string
+                  description: Ключ идемпотентности — обязателен, непустой
+                device_name:
+                  type: string
+                  description: Необязательно — обновляет человекочитаемое имя устройства при провизионировании
+                changes:
+                  $ref: "#/components/schemas/SyncPushChanges"
+              required: [batch_id, changes]
+      responses:
+        "400":
+          description: |
+            Некорректный JSON, отсутствует batch_id, changes — не объект,
+            либо строка внутри `changes` не несёт обязательную для своей
+            таблицы колонку (`error: invalid_row` — например, старая версия
+            клиента ещё не отправляет колонку, добавленную в протокол
+            позже; `detail` называет отсутствующий ключ). Транзакция
+            батча в этом случае уже откачена целиком, как и при `409`.
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: |
+            Токен без claim'а `device_id` — этот эндпоинт только для
+            мобильного входа (браузерный вход такого claim'а не несёт);
+            токен без `wallet:write` и `expense:write` (`insufficient_scope`,
+            заголовок `WWW-Authenticate`). С `expense:write` — нарушение его
+            границ, `error`: `only_operation` (в `changes` что-то кроме
+            `operation`), `delete_not_allowed` (`deleted` не `false`),
+            `operation_exists` (операция с таким uuid уже есть; `table`,
+            `uuid` — какая, батч откачен целиком), `reader_cannot_write`.
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Батч применён целиком (или это повтор уже применённого batch_id — тот же сохранённый ответ)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seq: {type: integer, format: int64}
+                  conflicts: {type: array, items: {}, maxItems: 0}
+                required: [seq, conflicts]
+        "409":
+          description: |
+            Батч НЕ применён целиком (одна транзакция — либо всё, либо
+            ничего). Три независимых случая, различаются формой тела:
+            конфликт имени счёта (`conflicts[]`, с `existing_uuid` — можно
+            автоматически разрешить), дубль другого уникального индекса
+            (`error: duplicate_key` — без `existing_uuid`, разрешение не
+            автоматизировано) или неизвестная ссылка (`error:
+            missing_reference` — например, content_sha256/icon_uuid без
+            предварительной загрузки через `/sync/blobs`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DuplicateNameConflict"
+                  - $ref: "#/components/schemas/DuplicateKeyError"
+                  - $ref: "#/components/schemas/MissingReferenceError"
+        "500":
+          description: Необработанная ошибка (глобальный exception handler)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
+  /sync/pull:
+    get:
+      operationId: syncPull
+      summary: Забрать изменения из двух независимых потоков (ledger + reference) с курсора
+      description: |
+        Два независимых курсора (см. `wallet-api/schema/README.md`, "Потоков
+        два") — `ledger` несёт данные леджера (включая СВОИ, не общие копии
+        валют/иконок/курсов), `reference` — только общие (`ledger_id IS
+        NULL`). `limit` — сколько строк добирать, но страница может выйти
+        БОЛЬШЕ: группа изменений с одинаковым `seq` (один push-батч) никогда
+        не разрезается между двумя вызовами.
+
+        Строки внутри `changes` — это ПОЛНЫЙ дамп колонок таблицы Postgres
+        (не команда, как в push): `uuid`, `ledger_id`, `seq`, `deleted_at`,
+        `updated_at`, `updated_by` + бизнес-колонки. `amount`/`rate` — JSON
+        строки (не голые числа) — иначе терялась бы точность, ради которой
+        `numeric` вообще завели.
+      tags: [sync]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: ledger_seq
+          in: query
+          schema: {type: integer, format: int64, default: 0}
+          description: Курсор потока leger — 0, если синк по этому потоку ещё не происходил
+        - name: reference_seq
+          in: query
+          schema: {type: integer, format: int64, default: 0}
+        - name: limit
+          in: query
+          schema: {type: integer, default: 500}
+          description: "Сколько строк добирать за страницу (страница может выйти больше — см. описание выше)"
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без claim'а device_id
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Изменения обоих потоков с текущего курсора
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ledger:
+                    type: object
+                    properties:
+                      next_seq: {type: integer, format: int64}
+                      changes: {$ref: "#/components/schemas/SyncPullChanges"}
+                    required: [next_seq, changes]
+                  reference:
+                    type: object
+                    properties:
+                      next_seq: {type: integer, format: int64}
+                      changes: {$ref: "#/components/schemas/SyncPullChanges"}
+                    required: [next_seq, changes]
+                required: [ledger, reference]
+
+  /sync/blobs:
+    post:
+      operationId: uploadBlob
+      summary: Загрузить содержимое (сейчас — только изображение иконки) по контент-адресу SHA-256
+      description: |
+        НЕ часть push/pull-протокола (нет батча, нет `seq`, нет device_id) —
+        отдельный, независимый эндпоинт: сохраняет байты один раз (`ON
+        CONFLICT DO NOTHING` — идемпотентно, повтор безопасен) и возвращает
+        их SHA-256, посчитанный СЕРВЕРОМ (не тем, что мог бы прислать
+        клиент). Загрузить содержимое нужно ДО того, как включить строку
+        `icon` с этим `content_sha256` в `POST /sync/push` — иначе она
+        получит `409 missing_reference`.
+
+        Аутентификация — обычная сессионная, БЕЗ требования claim'а
+        `device_id` (в отличие от `/sync/push`/`/sync/pull`): blob не
+        привязан к леджеру/устройству, браузерный вход годится не хуже
+        мобильного.
+      tags: [blobs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary, minLength: 1, maxLength: 1048576}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "400":
+          description: "Тело запроса пустое или больше 1 МиБ (см. wallet-api/schema/table/blob.sql)"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Содержимое сохранено (или уже было сохранено ранее — идемпотентно, ответ тот же)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sha256: {type: string, pattern: "^[0-9a-f]{64}$", description: "hex, посчитан сервером"}
+                required: [sha256]
+
+  /sync/blobs/{sha256}:
+    get:
+      operationId: downloadBlob
+      summary: Получить содержимое по его SHA-256
+      description: |
+        Для устройства, которое уже получило метаданные иконки (`uuid`/
+        `content_sha256`) через `GET /sync/pull`, но ещё не имеет самих
+        байт. Право прочитать КОНКРЕТНЫЙ blob по видимости соответствующей
+        иконки в леджере вызывающего в этом заходе не проверяется — только
+        факт аутентификации (см. org/docs/TODO_mobile_sync.md, "Открытые
+        вопросы").
+      tags: [blobs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: sha256
+          in: path
+          required: true
+          schema: {type: string, pattern: "^[0-9a-fA-F]{64}$"}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "400":
+          description: sha256 не является 64 hex-символами
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Содержимое с таким SHA-256 не загружено
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Сырые байты содержимого
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+
+  /api/ledger/members:
+    get:
+      operationId: listLedgerMembers
+      summary: Список участников СВОЕГО леджера
+      description: Видят все роли (owner/member/reader) — управляющие ручки ниже доступны только owner.
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У пользователя ещё нет леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Участники леджера
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members: {type: array, items: {$ref: "#/components/schemas/Member"}}
+                required: [members]
+
+  /api/ledger/members/{user_id}:
+    patch:
+      operationId: setLedgerMemberRole
+      summary: Сменить роль участника
+      description: |
+        Только owner. Роль `owner` этим путём не выдать и не снять — строка
+        владельца этим запросом не находится вовсе (0 совпадений — 404, та
+        же диагностика, что "участника нет"), для смены владельца см.
+        `POST /api/ledger/transfer-owner`.
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: {type: string, enum: [member, reader]}
+              required: [role]
+      responses:
+        "400":
+          description: Некорректный JSON или role не 'member'/'reader'
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вызывающего ещё нет леджера, ЛИБО под user_id в нём нет строки, ЛИБО это владелец
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Роль изменена
+    delete:
+      operationId: removeLedgerMember
+      summary: Удалить участника из леджера
+      description: Только owner. Владельца удалить этим путём нельзя (та же диагностика, что у PATCH выше).
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вызывающего ещё нет леджера, ЛИБО под user_id в нём нет строки, ЛИБО это владелец
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Участник удалён
+
+  /api/ledger/transfer-owner:
+    post:
+      operationId: transferLedgerOwner
+      summary: Передать владение леджером другому участнику
+      description: |
+        Только текущий owner. Одна транзакция, два последовательных `UPDATE`
+        (не один `CASE`) — см. `org/docs/TODO_mobile_sync.md`, п. 9.3: вызывающий
+        становится `member` в той же операции, целевой участник — `owner`.
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: {type: string, format: uuid, description: "Кто станет новым владельцем — уже должен быть участником этого леджера"}
+              required: [user_id]
+      responses:
+        "400":
+          description: Некорректный JSON или пустой user_id
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вызывающего ещё нет леджера, либо указанный user_id не участник этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Владение передано
+
+  /api/ledger/invites:
+    post:
+      operationId: createLedgerInvite
+      summary: Выпустить одноразовую пригласительную ссылку
+      description: |
+        Только owner. Сырой токен отдаётся ЗДЕСЬ и БОЛЬШЕ НИГДЕ (в БД —
+        только его sha256, см. `wallet-api/schema/table/ledger_invite.sql`) —
+        ссылку строит сам вызывающий клиент (`location.origin + '/join/' +
+        token`), wallet-api не знает публичный адрес wallet-web (LAN-only
+        MVP, разные пользователи могут открывать его по разным хостам).
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: {type: string, enum: [member, reader], description: "НЕ 'owner' — второго владельца ссылкой не пригласить"}
+                ttl_days: {type: integer, enum: [2, 7, 30]}
+              required: [role, ttl_days]
+      responses:
+        "400":
+          description: Некорректный JSON, role не 'member'/'reader', либо ttl_days не из {2, 7, 30}
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У пользователя ещё нет леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "201":
+          description: Приглашение создано
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CreatedInvite"}}
+    get:
+      operationId: listLedgerInvites
+      summary: Активные приглашения СВОЕГО леджера
+      description: |
+        Только owner. БЕЗ самого токена/ссылки — он не хранится (см. `POST`
+        выше), показывается ровно один раз в момент создания.
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У пользователя ещё нет леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Активные (не использованные, не отозванные, не просроченные) приглашения
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites: {type: array, items: {$ref: "#/components/schemas/InviteSummary"}}
+                required: [invites]
+
+  /api/ledger/invites/{id}:
+    delete:
+      operationId: revokeLedgerInvite
+      summary: Отозвать приглашение
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вызывающий — не owner этого леджера
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Приглашение не найдено в этом леджере, либо уже не активно
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Отозвано
+
+  /api/invites/accept:
+    post:
+      operationId: acceptLedgerInvite
+      summary: Принять приглашение по токену из ссылки
+      description: |
+        Любой аутентифицированный пользователь (не обязательно owner
+        какого-либо леджера — обычно наоборот, у него ещё НЕТ леджера).
+        Одноразово: вторая попытка тем же токеном получает `410`.
+      tags: [ledger]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token: {type: string, description: "Сырой токен из ссылки (не хэш)"}
+              required: [token]
+      responses:
+        "400":
+          description: Некорректный JSON или пустой token
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: |
+            У принимающего уже есть свой леджер (MVP — один леджер на
+            пользователя, см. `org/docs/TODO_mobile_sync.md`, п. 9.3) —
+            приглашение НЕ расходуется, им ещё можно воспользоваться.
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "410":
+          description: Токен не найден, уже использован, отозван или истёк срок
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Приглашение принято — вызывающий стал участником леджера
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ledger_id: {type: string, format: uuid}
+                  role: {type: string, enum: [member, reader]}
+                required: [ledger_id, role]
+
+  /api/account:
+    delete:
+      operationId: deleteAccount
+      summary: "Удалить аккаунт — самообслуживание (жёсткое удаление всех данных)"
+      description: |
+        Жёсткое (не мягкое/анонимизация) удаление ВСЕХ данных вызывающего
+        пользователя в этой базе — леджер(ы), где он единственный участник
+        (`role='owner'`, никого больше в `ledger_member`), со всем их
+        содержимым (счета, категории, операции, курсы, приглашения,
+        устройства), плюс сама строка `app_user`. Одна транзакция: либо
+        исчезает всё разом, либо (409 ниже) не трогается вовсе.
+
+        Если у пользователя ЕСТЬ ОБЩИЙ леджер с другими участниками
+        (`ledger_member` этого леджера — не только он) — отказ: жёсткое
+        удаление снесло бы данные, которыми пользуются другие люди. Сначала
+        `POST /api/ledger/transfer-owner` или `DELETE /api/ledger/members/{user_id}`.
+
+        Леджеры, где вызывающий — просто участник (`member`/`reader`)
+        чужого леджера, не удаляются — вызывающий из них просто выходит
+        (снимается только его строка `ledger_member`).
+
+        Отдельный, независимый вызов `DELETE /auth/me` (google-auth) удаляет
+        САМУ ИДЕНТИЧНОСТЬ (учётку) и отзывает все токены — два разных
+        сервиса, общей транзакции нет; wallet-web (настройки, "Удалить
+        аккаунт") вызывает СНАЧАЛА этот эндпоинт, ПОТОМ `DELETE /auth/me` —
+        см. её README.
+      tags: [account]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: Вызывающий владеет леджером с другими участниками — сначала передать владение или удалить их
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Аккаунт удалён (или его и не было — идемпотентно)
+
+  /api/currency-pairs:
+    get:
+      operationId: listCurrencyPairs
+      summary: Список видимых валютных пар (свои + общие)
+      description: |
+        DISTINCT по символу — если своя пара и общая делят один символ,
+        видна только своя (тот же приоритет, что у `resolve_eq_currency`).
+        У пользователя ещё нет леджера — `200` с пустым списком, не `404`
+        (тот же принцип, что у отчётов: этот путь ничего не провизионирует).
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Список пар
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pairs:
+                    type: array
+                    items: {$ref: "#/components/schemas/CurrencyPairSummary"}
+                required: [pairs]
+    post:
+      operationId: createCurrencyPair
+      summary: Добавить свою валютную пару
+      description: |
+        Единственный эндпоинт этого тега, ЗАВОДЯЩИЙ леджер при первом
+        обращении (`provisioning::ensure_personal_ledger`) — первая пара не
+        должна требовать похода на мобильный только затем, чтобы леджер
+        появился. Символ пары строится из ISO-кодов валют сервером, не
+        принимается от клиента.
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                base_currency_uuid: {type: string, format: uuid}
+                quote_currency_uuid: {type: string, format: uuid}
+                precision: {type: integer, minimum: 0, maximum: 10, default: 5}
+              required: [base_currency_uuid, quote_currency_uuid]
+      responses:
+        "400":
+          description: |
+            Невалидный JSON/precision вне диапазона, валюты совпадают, либо
+            base/quote не видны этому пользователю (не найдены/чужой леджер
+            — намеренно неотличимо, см. `currency_pairs_repo.hpp`).
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: У этого леджера уже есть пара с таким символом
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "201":
+          description: Пара создана
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyPairSummary"}}
+
+  /api/currency-pairs/{uuid}:
+    patch:
+      operationId: updateCurrencyPairPrecision
+      summary: Изменить точность своей пары
+      description: |
+        Только СВОЯ пара (`ledger_id` этого пользователя) — общая для веба
+        read-only, попытка её изменить получает тот же `404`, что и
+        несуществующий uuid (см. `currency_pairs_repo.hpp`, почему это
+        неотличимо намеренно).
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                precision: {type: integer, minimum: 0, maximum: 10}
+              required: [precision]
+      responses:
+        "400":
+          description: Невалидный JSON или precision вне диапазона
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вас ещё нет леджера, либо своей пары с таким uuid нет
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Обновлённая пара
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyPairSummary"}}
+    delete:
+      operationId: deleteCurrencyPair
+      summary: Удалить свою валютную пару
+      description: |
+        Мягкое удаление пары И ВСЕХ её ещё живых курсов (каскад той же
+        транзакцией/тем же `seq`, см. `currency_pairs_repo.hpp`) — только
+        своя пара, та же неотличимость 404, что и у PATCH выше.
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вас ещё нет леджера, либо своей пары с таким uuid нет
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Пара и её курсы удалены
+
+  /api/currency-pairs/{uuid}/rates:
+    get:
+      operationId: listCurrencyPairRates
+      summary: История курса пары (свои курсы перекрывают общие на ту же дату)
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: from
+          in: query
+          required: false
+          schema: {type: string, pattern: "^\\d{4}-\\d{2}-\\d{2}$"}
+          description: Включительно; без границы — с самого начала истории
+        - name: to
+          in: query
+          required: false
+          schema: {type: string, pattern: "^\\d{4}-\\d{2}-\\d{2}$"}
+          description: Включительно; без границы — по последний известный курс
+      responses:
+        "400":
+          description: from/to не в формате YYYY-MM-DD
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вас ещё нет леджера, либо пара не видна (не общая и не ваша)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Курсы, по убыванию даты
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rates:
+                    type: array
+                    items: {$ref: "#/components/schemas/CurrencyPairRateEntry"}
+                required: [rates]
+    post:
+      operationId: upsertCurrencyPairRate
+      summary: Добавить/изменить свой курс пары на дату
+      description: |
+        Апсерт по естественному ключу (леджер, пара, дата) — тот же арбитр,
+        что уже резолвит этот конфликт для мобильного push
+        (`uq_currency_pair_rate_ledger`): второй вызов на ту же дату
+        ОБНОВЛЯЕТ существующую строку (сохраняя её uuid), не плодит вторую.
+        Своя строка СОСУЩЕСТВУЕТ с общим курсом той же пары на ту же дату —
+        обе таблицы это допускают намеренно (см. `wallet-api/schema/table/
+        currency_pair_rate.sql`). Годится и для ОБЩЕЙ пары — заводит ЛИЧНЫЙ
+        курс поверх общего, не трогая саму пару.
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date: {type: string, pattern: "^\\d{4}-\\d{2}-\\d{2}$"}
+                rate:
+                  oneOf: [{type: string}, {type: number}]
+                  description: "Строго положительное; строка предпочтительна (см. \"Деньги — numeric\"), число тоже принимается — форма набирает его вручную"
+              required: [date, rate]
+      responses:
+        "400":
+          description: Невалидный JSON, date не в формате YYYY-MM-DD, либо rate не положительное число
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вас ещё нет леджера, либо пара не видна
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Курс создан или обновлён
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyPairRateEntry"}}
+
+  /api/currency-pairs/{uuid}/rates/{date}:
+    delete:
+      operationId: deleteCurrencyPairRate
+      summary: Удалить свой курс пары на дату
+      description: |
+        Только СВОЯ строка курса — если на эту дату есть только ОБЩИЙ курс
+        (своей строки нет), `404`: общий курс этим путём не удаляется (см.
+        `currency_pairs_repo.hpp`, `delete_rate`).
+      tags: [currency-pairs]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: date
+          in: path
+          required: true
+          schema: {type: string, pattern: "^\\d{4}-\\d{2}-\\d{2}$"}
+      responses:
+        "400":
+          description: date не в формате YYYY-MM-DD
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: У вас ещё нет леджера, либо своего курса на эту дату нет
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Курс удалён
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Access-токен google-auth, проверяется по JWKS. /sync/* дополнительно требуют claim device_id (мобильный вход)."
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+
+  parameters:
+    eqCurrency:
+      name: eq_currency
+      in: query
+      required: true
+      schema: {type: string}
+      description: "ISO-код валюты эквивалента (например USD) — обязателен на всех отчётах"
+    periodFrom:
+      name: from
+      in: query
+      required: true
+      schema: {type: string}
+      description: "Timestamp, граница ВКЛЮЧИТЕЛЬНА (в отличие от /balance)"
+    periodTo:
+      name: to
+      in: query
+      required: true
+      schema: {type: string}
+      description: "Timestamp, граница ВКЛЮЧИТЕЛЬНА"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+      required: [error]
+
+    Member:
+      type: object
+      description: |
+        Без поля "имя" — сервер хранит только email другого пользователя
+        (см. wallet-api/schema/table/app_user.sql), человекочитаемое имя видно
+        только в СВОЁМ JWT-claim'е, не в чужом.
+      properties:
+        user_id: {type: string, format: uuid}
+        email: {type: string}
+        role: {type: string, enum: [owner, member, reader]}
+        joined_at: {type: string, format: date-time}
+      required: [user_id, email, role, joined_at]
+
+    InviteSummary:
+      type: object
+      description: Без токена/ссылки — см. GET /api/ledger/invites, почему.
+      properties:
+        id: {type: string, format: uuid}
+        role: {type: string, enum: [member, reader]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+      required: [id, role, created_at, expires_at]
+
+    CreatedInvite:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        role: {type: string, enum: [member, reader]}
+        token: {type: string, description: "Сырой токен — показывается ровно один раз, в БД не хранится"}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+      required: [id, role, token, created_at, expires_at]
+
+    DuplicateNameConflict:
+      type: object
+      description: |
+        Конфликт `uq_account_name` (единственная таблица с осмысленной
+        диагностикой сегодня, см. README "Конфликт имени счёта"). Клиент
+        обязан переклеить свои локальные ссылки на `existing_uuid` (у себя —
+        `uuid`, который сам прислал) и повторить батч.
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              table: {type: string, enum: [account]}
+              reason: {type: string, enum: [duplicate_name]}
+              uuid: {type: string, format: uuid, description: "uuid, который прислал сам клиент в конфликтующей строке"}
+              existing_uuid: {type: string, format: uuid, description: "uuid уже существующей на сервере строки с тем же именем"}
+            required: [table, reason, uuid, existing_uuid]
+      required: [conflicts]
+
+    DuplicateKeyError:
+      type: object
+      description: |
+        Дубль уникального индекса, ОТЛИЧНОГО от uq_account_name (например,
+        icon.name — см. wallet-api/schema/table/icon.sql) — сервер не
+        диагностирует его так же осмысленно, как имя счёта (нет
+        existing_uuid, на который клиент мог бы переклеиться), но 500 тут
+        был бы хуже: клиент не отличил бы ожидаемый дубль от настоящего бага.
+      properties:
+        error: {type: string, enum: [duplicate_key]}
+        constraint: {type: string, description: "Имя нарушенного уникального индекса Postgres"}
+      required: [error, constraint]
+
+    MissingReferenceError:
+      type: object
+      description: "Внешний ключ не найден — например, content_sha256/icon_uuid, ещё не загруженный через /sync/blobs."
+      properties:
+        error: {type: string, enum: [missing_reference]}
+        detail: {type: string, description: "Текст ошибки Postgres как есть"}
+      required: [error, detail]
+
+    # ── Push: команда на изменение (uuid + бизнес-колонки + deleted) ────────
+
+    SyncPushChanges:
+      type: object
+      description: |
+        Все ключи опциональны — присылать только таблицы, где реально есть
+        dirty-строки. Неизвестное сервису имя таблицы игнорируется (не
+        ошибка) — совместимость вперёд, если клиент новее сервера. `icon` —
+        только МЕТАДАННЫЕ (content_sha256 должен ссылаться на уже
+        загруженный через POST /sync/blobs blob, см. описание операции
+        syncPush выше) — само содержимое сюда не входит.
+      properties:
+        account: {type: array, items: {$ref: "#/components/schemas/AccountPushRow"}}
+        account_operating: {type: array, items: {$ref: "#/components/schemas/AccountOperatingPushRow"}}
+        operation: {type: array, items: {$ref: "#/components/schemas/OperationPushRow"}}
+        operation_link: {type: array, items: {$ref: "#/components/schemas/OperationLinkPushRow"}}
+        currency: {type: array, items: {$ref: "#/components/schemas/CurrencyPushRow"}}
+        currency_pair: {type: array, items: {$ref: "#/components/schemas/CurrencyPairPushRow"}}
+        currency_pair_rate: {type: array, items: {$ref: "#/components/schemas/CurrencyPairRatePushRow"}}
+        currency_conversion: {type: array, items: {$ref: "#/components/schemas/CurrencyConversionPushRow"}}
+        icon: {type: array, items: {$ref: "#/components/schemas/IconPushRow"}}
+
+    SyncPushRowBase:
+      type: object
+      properties:
+        uuid: {type: string, format: uuid}
+        deleted: {type: boolean, default: false, description: "true — мягкое удаление; сервер сам проставит deleted_at=now()"}
+      required: [uuid]
+
+    AccountPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            name: {type: string}
+            comment: {type: string}
+            icon_uuid: {type: string, format: uuid}
+            is_archived: {type: boolean}
+            system_kind: {type: integer, minimum: 0, maximum: 2, description: "0 = обычная категория/счёт, 1 = Transfer, 2 = Transfer commission — явный признак вместо распознавания по name"}
+            kind: {type: integer, minimum: 0, maximum: 1, description: "0 = категория, 1 = кошелёк — дублирует наличие строки в account_operating явным полем, проставляется один раз при создании и дальше не меняется"}
+          required: [name, comment, icon_uuid, is_archived, system_kind, kind]
+
+    AccountOperatingPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          description: "uuid ЭТОЙ строки всегда равен uuid соответствующего account (общий FK/PK на уровне синка, см. wallet-api/schema/table/account_operating.sql)."
+          properties:
+            currency_uuid: {type: string, format: uuid}
+          required: [currency_uuid]
+
+    OperationPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            date: {type: string, description: "Бизнес-дата операции, БЕЗ часового пояса (timestamp, не timestamptz)"}
+            acc_fr_uuid: {type: string, format: uuid}
+            acc_to_uuid: {type: string, format: uuid}
+            amount: {type: string, description: "numeric(20,8) КАК СТРОКА — не число, иначе теряется точность"}
+            comment: {type: string}
+          required: [date, acc_fr_uuid, acc_to_uuid, amount, comment]
+
+    OperationLinkPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            main_uuid: {type: string, format: uuid, description: "Проводка списания (главная нога) перевода/комиссии"}
+            link_uuid: {type: string, format: uuid}
+            type: {type: integer, minimum: 0, maximum: 1, description: "0 = нога валютного перевода, 1 = комиссия — явная роль связки вместо вывода по system_kind счёта-источника"}
+          required: [main_uuid, link_uuid, type]
+
+    CurrencyPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            name: {type: string}
+            iso_code: {type: string}
+            icon_uuid: {type: string, format: uuid}
+            symbol: {type: string}
+            precision: {type: integer, minimum: 0, maximum: 8}
+          required: [name, iso_code, icon_uuid, symbol, precision]
+
+    CurrencyPairPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            symbol: {type: string}
+            base_currency_uuid: {type: string, format: uuid}
+            quote_currency_uuid: {type: string, format: uuid}
+            precision: {type: integer, minimum: 0, maximum: 10}
+          required: [symbol, base_currency_uuid, quote_currency_uuid, precision]
+
+    CurrencyPairRatePushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            currency_pair_uuid: {type: string, format: uuid}
+            date:
+              type: string
+              format: date
+              description: |
+                Курс на день, время не имеет смысла. Если всё же прислано с
+                временем (например, старая локальная строка) — сервер САМ
+                обрежет до первых 10 символов ("yyyy-MM-dd") перед вставкой;
+                не полагайтесь на это — два локальных дубля одной даты с
+                разным временем всё равно упадут в 409 duplicate_key на
+                uq_currency_pair_rate_ledger (это конфликт данных, не формата).
+            rate: {type: string, description: "numeric(24,10) КАК СТРОКА"}
+          required: [currency_pair_uuid, date, rate]
+
+    CurrencyConversionPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          properties:
+            from_currency_uuid: {type: string, format: uuid}
+            to_currency_uuid: {type: string, format: uuid}
+            num: {type: integer, minimum: 0}
+            currency_pair_uuid: {type: string, format: uuid}
+            is_reverse: {type: boolean}
+          required: [from_currency_uuid, to_currency_uuid, num, currency_pair_uuid, is_reverse]
+
+    IconPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          description: |
+            Метаданные — content_sha256 должен ссылаться на уже загруженный
+            через POST /sync/blobs blob (иначе 409 missing_reference); сами
+            байты изображения через этот протокол не передаются.
+          properties:
+            name: {type: string}
+            content_sha256: {type: string, pattern: "^[0-9a-f]{64}$", description: "hex, из ответа POST /sync/blobs"}
+            icon_type: {type: integer, description: "0=CATEGORY, 1=FLAG; другие значения трактуются как CATEGORY"}
+          required: [name, content_sha256, icon_type]
+
+    # ── Pull: полный дамп строки (uuid + системные + бизнес-колонки) ────────
+
+    SyncPullChanges:
+      type: object
+      description: "Все ключи опциональны — присутствуют только таблицы, где есть строки новее курсора."
+      properties:
+        account: {type: array, items: {$ref: "#/components/schemas/AccountPullRow"}}
+        account_operating: {type: array, items: {$ref: "#/components/schemas/AccountOperatingPullRow"}}
+        operation: {type: array, items: {$ref: "#/components/schemas/OperationPullRow"}}
+        operation_link: {type: array, items: {$ref: "#/components/schemas/OperationLinkPullRow"}}
+        currency: {type: array, items: {$ref: "#/components/schemas/CurrencyPullRow"}}
+        currency_pair: {type: array, items: {$ref: "#/components/schemas/CurrencyPairPullRow"}}
+        currency_pair_rate: {type: array, items: {$ref: "#/components/schemas/CurrencyPairRatePullRow"}}
+        currency_conversion: {type: array, items: {$ref: "#/components/schemas/CurrencyConversionPullRow"}}
+        icon: {type: array, items: {$ref: "#/components/schemas/IconPullRow"}}
+
+    SyncPullRowBase:
+      type: object
+      properties:
+        uuid: {type: string, format: uuid}
+        ledger_id: {type: string, format: uuid, nullable: true, description: "null — общая (reference) строка"}
+        seq: {type: integer, format: int64}
+        deleted_at: {type: string, format: date-time, nullable: true}
+        updated_at: {type: string, format: date-time, description: "Диагностика — момент последнего изменения на сервере"}
+        updated_by: {type: string, format: uuid, nullable: true, description: "Устройство, применившее последнее изменение"}
+      required: [uuid, ledger_id, seq, deleted_at, updated_at, updated_by]
+
+    AccountPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            name: {type: string}
+            comment: {type: string}
+            icon_uuid: {type: string, format: uuid}
+            is_archived: {type: boolean}
+            system_kind: {type: integer, minimum: 0, maximum: 2, description: "0 = обычная категория/счёт, 1 = Transfer, 2 = Transfer commission — явный признак вместо распознавания по name"}
+            kind: {type: integer, minimum: 0, maximum: 1, description: "0 = категория, 1 = кошелёк — дублирует наличие строки в account_operating явным полем, проставляется один раз при создании и дальше не меняется"}
+          required: [name, comment, icon_uuid, is_archived, system_kind, kind]
+
+    AccountOperatingPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            currency_uuid: {type: string, format: uuid}
+          required: [currency_uuid]
+
+    OperationPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            date: {type: string, description: "ISO-8601 без часового пояса, например 2026-01-15T10:00:00"}
+            acc_fr_uuid: {type: string, format: uuid}
+            acc_to_uuid: {type: string, format: uuid}
+            amount: {type: string, description: "Строкой, см. AccountPushRow"}
+            comment: {type: string}
+          required: [date, acc_fr_uuid, acc_to_uuid, amount, comment]
+
+    OperationLinkPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            main_uuid: {type: string, format: uuid}
+            link_uuid: {type: string, format: uuid}
+            type: {type: integer, minimum: 0, maximum: 1, description: "0 = нога валютного перевода, 1 = комиссия — явная роль связки вместо вывода по system_kind счёта-источника"}
+          required: [main_uuid, link_uuid, type]
+
+    CurrencyPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            name: {type: string}
+            iso_code: {type: string}
+            icon_uuid: {type: string, format: uuid}
+            symbol: {type: string}
+            precision: {type: integer}
+          required: [name, iso_code, icon_uuid, symbol, precision]
+
+    CurrencyPairPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            symbol: {type: string}
+            base_currency_uuid: {type: string, format: uuid}
+            quote_currency_uuid: {type: string, format: uuid}
+            precision: {type: integer}
+          required: [symbol, base_currency_uuid, quote_currency_uuid, precision]
+
+    CurrencyPairRatePullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            currency_pair_uuid: {type: string, format: uuid}
+            date: {type: string, format: date}
+            rate: {type: string}
+          required: [currency_pair_uuid, date, rate]
+
+    CurrencyConversionPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          properties:
+            from_currency_uuid: {type: string, format: uuid}
+            to_currency_uuid: {type: string, format: uuid}
+            num: {type: integer}
+            currency_pair_uuid: {type: string, format: uuid}
+            is_reverse: {type: boolean}
+          required: [from_currency_uuid, to_currency_uuid, num, currency_pair_uuid, is_reverse]
+
+    IconPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          description: |
+            Метаданные — те же поля, что и в IconPushRow, симметрично.
+            Само содержимое здесь не приходит — скачивается отдельно через
+            GET /sync/blobs/{content_sha256}, только если ещё не загружено
+            локально.
+          properties:
+            name: {type: string}
+            content_sha256: {type: string, pattern: "^[0-9a-f]{64}$", description: "hex (не \"\\x...\", как отдал бы to_jsonb() bytea напрямую — сервер патчит это поле, см. TableSpec::hex_columns)"}
+            icon_type: {type: integer, description: "0=CATEGORY, 1=FLAG; встречаются и другие исторические значения — трактуются как CATEGORY"}
+          required: [name, content_sha256, icon_type]
+
+    CurrencyRefSummary:
+      type: object
+      description: base_currency/quote_currency внутри CurrencyPairSummary — та же тройка полей, что и в справочнике GET /api/reports/currencies (wallet-report).
+      properties:
+        uuid: {type: string, format: uuid}
+        iso_code: {type: string}
+        name: {type: string}
+        icon_sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
+      required: [uuid, iso_code, name, icon_sha256]
+
+    CurrencyPairSummary:
+      type: object
+      properties:
+        uuid: {type: string, format: uuid}
+        symbol: {type: string, description: "например \"EURUSD\" — iso_code(base) + iso_code(quote), собран сервером"}
+        precision: {type: integer}
+        is_own:
+          type: boolean
+          description: "true — своя пара этого леджера (изменяема/удаляема этим API); false — общая (только просмотр)"
+        base_currency: {$ref: "#/components/schemas/CurrencyRefSummary"}
+        quote_currency: {$ref: "#/components/schemas/CurrencyRefSummary"}
+        latest_date:
+          type: string
+          description: "Дата последнего известного курса (YYYY-MM-DD) — пустая строка, если курсов ещё нет вовсе"
+        latest_rate:
+          type: string
+          description: "Последний известный курс, строкой (\"Деньги — numeric\") — пустая строка, если курсов ещё нет"
+        prev_rate:
+          type: string
+          description: "Курс ПЕРЕД последним — для % изменения на клиенте (тот же приём, что Android CurrencyPairListAdapter); пустая строка, если такого нет"
+      required: [uuid, symbol, precision, is_own, base_currency, quote_currency, latest_date, latest_rate, prev_rate]
+
+    CurrencyPairRateEntry:
+      type: object
+      properties:
+        uuid: {type: string, format: uuid}
+        date: {type: string, description: "YYYY-MM-DD"}
+        rate: {type: string, description: "Строго положительное, строкой"}
+        is_own:
+          type: boolean
+          description: "true — своя строка этого леджера (удаляема через DELETE .../rates/{date}); false — общий курс (read-only)"
+      required: [uuid, date, rate, is_own]

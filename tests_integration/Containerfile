@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# Собирает и запускает wallet_api_integration_tests (test_push_batch.cpp/
+# test_invites.cpp/test_currency_pairs.cpp) — НЕ образ сервиса (тот —
+# ../Containerfile, тесты туда сознательно не входят, см. его же
+# комментарий). Используется run_local.sh, вручную не нужен.
+#
+# Тот же базовый образ и набор пакетов, что у ../Containerfile (стадия
+# build): держим их идентичными нарочно — если тестовая сборка однажды
+# перестанет компилироваться в этом окружении, а прод-образ соберётся, это
+# будет означать, что окружения разошлись, а не что тест сломан. Тот же
+# приём, что в wallet-report/tests_integration/Containerfile.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        libssl-dev \
+        libpq-dev \
+        zlib1g-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY CMakeLists.txt openapi.yaml ./
+COPY VERSION ./
+COPY src/ src/
+COPY third_party/ third_party/
+COPY scripts/ scripts/
+COPY tests_integration/ tests_integration/
+
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DWALLET_API_BUILD_TESTS=OFF \
+        -DWALLET_API_BUILD_INTEGRATION_TESTS=ON \
+    && cmake --build build --target wallet_api_integration_tests --config Release -j"$(nproc)"
+
+ENTRYPOINT ["/src/build/tests_integration/wallet_api_integration_tests"]

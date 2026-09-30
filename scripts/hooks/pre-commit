@@ -1,0 +1,46 @@
+#!/bin/bash
+# Гейт перед коммитом: если в индексе есть правки схемы БД (schema/
+# или migrations/ этого репозитория), гоняет интеграционные тесты
+# отчётов (соседний репозиторий ../wallet-report/tests_integration) — тесты на реальной
+# цепочке миграций и реальном протоколе синка (push_batch), см. README.md
+# рядом с ними, "Почему push_batch, а не SQL".
+#
+# Установка (один раз на чекаут — сам хук лежит в scripts/hooks, а не в
+# .git/hooks, потому что тот каталог не версионируется и не переедет вместе
+# с клоном):
+#   git config core.hooksPath scripts/hooks
+#
+# Разово обойти (например, коммит документации внутри правки схемы, где
+# тесты уже гонялись отдельно): git commit --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+changed="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+if ! grep -qE '^(schema/|migrations/)' <<<"$changed"; then
+    exit 0
+fi
+
+echo "Изменения затрагивают схему серверной БД — гоняю тесты"
+echo "(../wallet-report/tests_integration/run_local.sh)…"
+echo
+
+report_tests="$repo_root/../wallet-report/tests_integration/run_local.sh"
+if [[ ! -f "$report_tests" ]]; then
+    echo "Не найден $report_tests — склонируйте wallet-report рядом с wallet-api." >&2
+    exit 1
+fi
+
+if bash "$report_tests"; then
+    echo
+    echo "Тесты прошли — коммит продолжается."
+    exit 0
+else
+    echo
+    echo "Тесты НЕ прошли — коммит отклонён." >&2
+    echo "Почини, или, если это осознанно (например, тесты уже гонялись отдельно" >&2
+    echo "для этого же изменения), обойди разово: git commit --no-verify" >&2
+    exit 1
+fi

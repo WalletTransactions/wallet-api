@@ -1,0 +1,8 @@
+build
+out
+logs
+.env
+.env.example
+Containerfile
+.containerignore
+README.md

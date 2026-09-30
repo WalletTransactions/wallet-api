@@ -1,0 +1,17 @@
+/build
+/out
+/logs
+.env
+
+# Общие правила (перенесены из .gitignore монорепозитория WalletTransactions,
+# 2026-10-01): локальные секреты, данные, логи, артефакты Windows.
+.env
+*.csv
+*.txt
+!CMakeLists.txt
+*.log
+*.lnk
+NUL
+__pycache__/
+*.pyc
+venv/

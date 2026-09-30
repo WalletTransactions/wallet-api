@@ -1,0 +1,11 @@
+#pragma once
+
+// Сгенерировано CMake (см. CMakeLists.txt, "Версия приложения") из VERSION +
+// git-хэша на момент configure — сам файл version.hpp НЕ лежит в src/ и не
+// коммитится, только этот .in-шаблон. Не редактировать version.hpp руками —
+// правьте VERSION (semver) или коммитьте (git-хэш подхватится сам).
+namespace version {
+constexpr const char* kService = "wallet-api";
+constexpr const char* kVersion = "@APP_VERSION@";
+constexpr const char* kGitCommit = "@GIT_COMMIT@";
+}  // namespace version
