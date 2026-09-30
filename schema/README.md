@@ -292,10 +292,8 @@ refresh-токенов в `device`) был спроектирован здесь
 проверена интеграционными тестами отчётов
 ([`wallet-report/tests_integration/`](https://github.com/WalletTransactions/wallet-report/tree/main/tests_integration),
 `bash run_local.sh`) — 20 тестов на реальной цепочке миграций и реальном
-протоколе синка. Гоняется автоматически перед каждым коммитом, если он
-трогает `wallet-api/schema/` или `wallet-infra/infra/db/migrations/` (см.
-[`scripts/hooks/README.md`](../scripts/hooks/README.md), один раз
-`git config core.hooksPath scripts/hooks`).
+протоколе синка. Запускать вручную перед коммитом, который трогает
+`schema/` или `migrations/` (или Jenkins-job `wallet-report-integration-tests`).
 
 Отдельная ловушка при добавлении функции: тело на **SQL** разбирается сразу при
 `CREATE FUNCTION`, поэтому такая функция обязана идти в `apply.sql` после всех
