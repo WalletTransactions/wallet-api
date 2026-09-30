@@ -31,7 +31,7 @@
 | `push_missing_reference_self_heals_when_client_resends_referenced_row` | Тот же инцидент — второй push, довозящий именно названные `table`/`uuid` вместе с исходной `currency_pair` (то, что теперь делает Android `SyncEngine.pushDirty` при получении такого 409), обязан пройти `200` |
 
 Тесты `reports_repo.hpp` (`test_reports.cpp`) переехали вместе с самими
-отчётами в [wallet-report](https://github.com/WalletTransactions/wallet-report/tree/main/.) (2026-09-08, CQRS-lite) —
+отчётами в [wallet-report](https://github.com/WalletTransactions/wallet-report) (2026-09-08, CQRS-lite) —
 см. его `tests_integration/README.md`.
 
 `test_invites.cpp` (Фаза 6, `org/docs/TODO_mobile_sync.md`, п. 9.6) — 14
@@ -70,7 +70,7 @@ bash run_local.sh
 (идемпотентно), собирает тестовый образ (`Containerfile` рядом) и
 прогоняет его. Повторные запуски быстрее — слои и база переиспользуются, а
 тесты не требуют очистки между прогонами (см. "Изоляция" выше). Та же база
-и тот же приём, что у [wallet-report](https://github.com/WalletTransactions/wallet-report/tree/main/.)
+и тот же приём, что у [wallet-report](https://github.com/WalletTransactions/wallet-report)
 (`tests_integration/run_local.sh`) — оба сервиса читают/пишут одну и ту же
 `wallet_api_it`, заводить её дважды не нужно.
 

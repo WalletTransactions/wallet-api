@@ -367,4 +367,4 @@ JSON на сотни байт.
 Ради этой таблицы push применяется одной транзакцией: если вторая нога или
 комиссия доедут отдельно от первой, второе устройство увидит половину операции и
 баланс кошелька разойдётся. Сама группа при удалении не снимается — это задача
-приложения, как и в клиенте (см. [`../../Android/TODO_transfers.md`](https://github.com/WalletTransactions/android-wallet/blob/main/docs/TODO_transfers.md)).
+приложения, как и в клиенте (см. [`android-wallet/docs/TODO_transfers.md`](https://github.com/WalletTransactions/android-wallet/blob/main/docs/TODO_transfers.md)).

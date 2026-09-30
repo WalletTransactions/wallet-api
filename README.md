@@ -1,8 +1,8 @@
 # wallet-api
 
 Сервис ведения кошельков — то, что раньше временно жило внутри
-[google-auth](https://github.com/WalletTransactions/google-auth/tree/main/.) (см. историю в README
-[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.)), теперь отдельный сервис со своей БД.
+[google-auth](https://github.com/WalletTransactions/google-auth) (см. историю в README
+[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway)), теперь отдельный сервис со своей БД.
 
 Полное описание HTTP API (пути, тела запросов/ответов, коды ошибок,
 включая протокол `/sync/*`) — [`openapi.yaml`](openapi.yaml). Сервис отдаёт
@@ -33,7 +33,7 @@ CDN — см. его README) с формой "Try it out" (кнопка Authoriz
 - **Есть:** `POST /sync/blobs`/`GET /sync/blobs/:sha256` — загрузка/выдача
   содержимого иконок (см. "Иконки — content-addressable blob" ниже).
 - **Отчётов (`GET /api/reports/*`) здесь больше нет** — выделены в отдельный
-  сервис [wallet-report](https://github.com/WalletTransactions/wallet-report/tree/main/.), см. "Отчёты — выделены в
+  сервис [wallet-report](https://github.com/WalletTransactions/wallet-report), см. "Отчёты — выделены в
   отдельный сервис" ниже.
 - **Есть:** `/api/ledger/*`, `/api/invites/accept` — доступ и приглашения
   (org/docs/TODO_mobile_sync.md, Фаза 6), см. "Доступ и приглашения" ниже.
@@ -94,9 +94,9 @@ DML-роли на каждый сервис. Раньше, до появлени
 
 wallet-api не логинит и не выпускает токены — эта часть целиком на
 auth-сервисе (google-auth). Ровно тот же приём, что в
-[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.) (см. его README, "Как убрали общий
+[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway) (см. его README, "Как убрали общий
 секрет") — а раньше и в wallet-bff, до того как SPA его упразднила (см.
-README [wallet-web](https://github.com/WalletTransactions/wallet-web/tree/main/.), "Куда делся wallet-bff"):
+README [wallet-web](https://github.com/WalletTransactions/wallet-web), "Куда делся wallet-bff"):
 
 1. Читает токен — сначала заголовок `Authorization: Bearer`, иначе cookie
    `session` (см. `session.hpp`).
@@ -120,7 +120,7 @@ README [wallet-web](https://github.com/WalletTransactions/wallet-web/tree/main/.
 ## Доступ через гейтвей
 
 Как и `/api/*` auth-сервиса раньше, эндпоинты этого сервиса теперь
-проксирует [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.) — см. его README и
+проксирует [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway) — см. его README и
 `WALLET_API_URL` в его `.env`. Прямой поход в порт wallet-api (минуя гейтвей)
 всё ещё работает для API-клиентов с `Authorization: Bearer` (curl, Postman) —
 именно так и стоит его тестировать, cookie-флоу привязан к origin гейтвея.
@@ -454,7 +454,7 @@ pairs_shows_it_as_own` зависал молча (0% CPU, `pg_stat_activity` п�
 ## Отчёты — выделены в отдельный сервис
 
 `GET /api/reports/*` здесь больше нет — 2026-09-08 отчёты выделены в
-отдельный сервис [wallet-report](https://github.com/WalletTransactions/wallet-report/tree/main/.) (CQRS-lite: та же
+отдельный сервис [wallet-report](https://github.com/WalletTransactions/wallet-report) (CQRS-lite: та же
 шареная база, но отдельный процесс с единственной read-only ролью
 `wallet_reader`, а не второе соединение внутри этого же процесса — см. его
 README, "История"). Гейтвей маршрутизирует `/api/reports/*` туда, не сюда
@@ -497,7 +497,7 @@ cp .env.example .env
   БД" выше) — ни база, ни логин/пароль не должны совпадать с тем, что в
   `DATABASE_URL` google-auth; инстанс Postgres при этом может быть общим.
   (`REPORTS_DATABASE_URL`/роль `wallet_reader` этому сервису больше не
-  нужны — см. README [wallet-report](https://github.com/WalletTransactions/wallet-report/tree/main/.).)
+  нужны — см. README [wallet-report](https://github.com/WalletTransactions/wallet-report).)
 - `DATABASE_POOL_SIZE` — сколько соединений с этой ролью держать одновременно
   (по умолчанию `8`, см. `src/db.hpp::Pool`) — раньше сервис держал ровно
   одно на весь процесс, и один медленный запрос (крупный `push`, конфликт с
