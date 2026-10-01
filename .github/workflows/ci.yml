@@ -1,0 +1,60 @@
+# Сборка и юнит-тесты на каждый push в main и на pull request.
+#
+# Выкат, интеграционные и нагрузочные тесты — не здесь: им нужен живой стек
+# на машине разработчика, это делает Jenkins (BuildPlatform). Что из этого
+# переносить в GitHub Actions (self-hosted runner) — открытый вопрос, см.
+# org/docs/TODO_ci.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    # Тот же базовый образ, что build-стадия Containerfile: тесты собираются
+    # теми же компилятором и библиотеками, что и сам сервис.
+    container: debian:bookworm-slim
+    timeout-minutes: 20
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              build-essential cmake libssl-dev libpq-dev zlib1g-dev pkg-config \
+              git ca-certificates
+
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DWALLET_API_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # Только проверка, что образ собирается; никуда не публикуется.
+      - name: Build image
+        run: |
+          docker build \
+              --build-arg GIT_COMMIT="$(git rev-parse --short=8 HEAD)" \
+              -f Containerfile -t wallet-api:ci .
