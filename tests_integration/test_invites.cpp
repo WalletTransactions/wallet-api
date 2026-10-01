@@ -169,6 +169,66 @@ TEST(accept_when_already_has_a_ledger_is_rejected_and_invite_stays_active) {
     CHECK_EQ(ok.ledger_id, owner.ledger_id);
 }
 
+TEST(accept_replacing_empty_ledger_deletes_it_and_joins_invited_one) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+    auto invite = invites_repo::create_invite(*db, owner.ledger_id, owner.user_id, "member", 7);
+
+    // make_identity заводит леджер, но ничего в него не пишет — seq = 0.
+    auto joiner = fixture::make_identity(*db);
+    auto first = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token);
+    CHECK(first.status == invites_repo::AcceptStatus::kAlreadyHasLedger);
+    CHECK(first.ledger_empty);
+
+    auto ok = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token, true);
+    REQUIRE(ok.status == invites_repo::AcceptStatus::kOk);
+    CHECK_EQ(ok.ledger_id, owner.ledger_id);
+    CHECK_EQ(ok.role, std::string("member"));
+
+    CHECK(db->exec("SELECT 1 FROM ledger WHERE id = $1", {joiner.ledger_id}).rows.empty());
+    CHECK(db->exec("SELECT 1 FROM change_stream WHERE id = $1", {joiner.ledger_id}).rows.empty());
+    auto membership = invites_repo::find_membership(*db, joiner.user_id);
+    REQUIRE(membership.has_value());
+    CHECK_EQ(membership->ledger_id, owner.ledger_id);
+}
+
+TEST(accept_replacing_non_empty_ledger_is_rejected_and_nothing_changes) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+    auto invite = invites_repo::create_invite(*db, owner.ledger_id, owner.user_id, "member", 7);
+
+    auto joiner = fixture::make_identity(*db);
+    db->exec("SELECT next_seq($1)", {joiner.ledger_id}); // был хотя бы один push
+
+    auto first = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token);
+    CHECK(first.status == invites_repo::AcceptStatus::kAlreadyHasLedger);
+    CHECK(!first.ledger_empty);
+
+    auto forced = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token, true);
+    CHECK(forced.status == invites_repo::AcceptStatus::kAlreadyHasLedger);
+    CHECK_EQ(invites_repo::find_membership(*db, joiner.user_id)->ledger_id, joiner.ledger_id);
+
+    // Приглашение не израсходовано.
+    auto ok = invites_repo::accept_invite(*db, uuidgen::v4(), "fresh@example.com", invite.token);
+    CHECK(ok.status == invites_repo::AcceptStatus::kOk);
+}
+
+TEST(accept_replacing_ledger_with_other_members_is_rejected) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+    auto invite = invites_repo::create_invite(*db, owner.ledger_id, owner.user_id, "member", 7);
+
+    // seq = 0, но в леджере есть кто-то ещё — удалять нельзя.
+    auto joiner = fixture::make_identity(*db);
+    add_member(*db, joiner.ledger_id, "reader");
+
+    auto first = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token);
+    CHECK(!first.ledger_empty);
+    auto forced = invites_repo::accept_invite(*db, joiner.user_id, "j@example.com", invite.token, true);
+    CHECK(forced.status == invites_repo::AcceptStatus::kAlreadyHasLedger);
+    CHECK(!db->exec("SELECT 1 FROM ledger WHERE id = $1", {joiner.ledger_id}).rows.empty());
+}
+
 TEST(set_member_role_ignores_owner_row_but_updates_real_member) {
     auto db = fixture::open();
     auto owner = fixture::make_identity(*db);

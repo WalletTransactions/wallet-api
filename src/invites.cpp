@@ -282,7 +282,15 @@ void handle_accept_invite(AppState& state, const httplib::Request& req, httplib:
         return;
     }
 
-    auto result = invites_repo::accept_invite(*state.db_pool->acquire(), user->user_id, user->email, token);
+    auto replace_it = body.find("replace_empty_ledger");
+    if (replace_it != body.end() && !replace_it->is_boolean()) {
+        json_error(res, 400, "replace_empty_ledger должен быть boolean");
+        return;
+    }
+    bool replace_empty_ledger = replace_it != body.end() && replace_it->get<bool>();
+
+    auto result = invites_repo::accept_invite(*state.db_pool->acquire(), user->user_id, user->email, token,
+                                              replace_empty_ledger);
     switch (result.status) {
         case invites_repo::AcceptStatus::kOk:
             res.set_content(
@@ -293,11 +301,16 @@ void handle_accept_invite(AppState& state, const httplib::Request& req, httplib:
             json_error(res, 410, "ссылка недействительна — использована, отозвана или истёк срок");
             return;
         case invites_repo::AcceptStatus::kAlreadyHasLedger:
-            // См. org/docs/TODO_mobile_sync.md, п. 9.3, открытый вопрос "один
-            // леджер на пользователя" — MVP запрещает второй, приглашение НЕ
-            // расходуется (годится следующему, у кого леджера ещё нет).
-            json_error(res, 409,
-                       "у вас уже есть свой кошелёк — принять это приглашение сейчас нельзя");
+            // См. org/docs/TODO_mobile_sync.md, п. 9.7 — один леджер на
+            // пользователя, приглашение НЕ расходуется. ledger_empty = true —
+            // клиент может предложить заменить пустой леджер и повторить
+            // запрос с replace_empty_ledger.
+            res.status = 409;
+            res.set_content(
+                json{{"error", "у вас уже есть свой кошелёк — принять это приглашение сейчас нельзя"},
+                     {"ledger_empty", result.ledger_empty}}
+                    .dump(),
+                kJsonContentType);
             return;
     }
 }

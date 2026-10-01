@@ -107,6 +107,11 @@ struct AcceptResult {
     AcceptStatus status;
     std::string ledger_id; // заполнено только при kOk
     std::string role;      // заполнено только при kOk
+    // Только при kAlreadyHasLedger: имеющийся леджер пуст — вызывающий в нём
+    // единственный участник (owner), и в него ещё ни разу ничего не
+    // записывалось (change_stream.seq = 0). Такой леджер можно заменить
+    // приглашением — повторный вызов с replace_empty_ledger = true.
+    bool ledger_empty = false;
 };
 
 // email — как upsert_user в provisioning.cpp: кэш claim'а из токена,
@@ -114,7 +119,13 @@ struct AcceptResult {
 // ТОГО ЖЕ user_id (два разных приглашения в два разных леджера) теоретически
 // возможна — тот же принятый риск, что в provisioning.cpp::ensure_identity,
 // см. .cpp.
+//
+// replace_empty_ledger — явное согласие пользователя удалить свой ПУСТОЙ
+// леджер (см. AcceptResult::ledger_empty) ради приглашения. Удаление и
+// принятие — одна транзакция: либо пользователь уже в новом леджере, либо
+// старый не тронут. Непустой леджер не удаляется никогда — kAlreadyHasLedger.
+// См. org/docs/TODO_mobile_sync.md, п. 9.7, решение 2026-10-01.
 AcceptResult accept_invite(db::Database& db, const std::string& user_id, const std::string& email,
-                            const std::string& raw_token);
+                            const std::string& raw_token, bool replace_empty_ledger = false);
 
 } // namespace invites_repo

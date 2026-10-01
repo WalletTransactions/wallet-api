@@ -180,8 +180,24 @@ bool revoke_invite(db::Database& db, const std::string& ledger_id, const std::st
     return !res.rows.empty();
 }
 
+namespace {
+
+// Пустой — см. AcceptResult::ledger_empty. Без блокировки: это только
+// подсказка клиенту, предлагать ли замену; решает повторная проверка под
+// FOR UPDATE внутри accept_invite.
+bool ledger_is_empty(db::Database& db, const std::string& ledger_id) {
+    auto res = db.exec(
+        "SELECT 1 FROM change_stream cs "
+        "WHERE cs.id = $1 AND cs.seq = 0 "
+        "  AND (SELECT count(*) FROM ledger_member m WHERE m.ledger_id = cs.id) = 1",
+        {ledger_id});
+    return !res.rows.empty();
+}
+
+} // namespace
+
 AcceptResult accept_invite(db::Database& db, const std::string& user_id, const std::string& email,
-                            const std::string& raw_token) {
+                            const std::string& raw_token, bool replace_empty_ledger) {
     // См. provisioning.cpp::ensure_identity — тот же принятый риск: два
     // одновременных accept ДВУХ РАЗНЫХ приглашений одним и тем же (новым)
     // user_id теоретически могут оба пройти проверку "ещё нет леджера" раньше,
@@ -189,12 +205,37 @@ AcceptResult accept_invite(db::Database& db, const std::string& user_id, const s
     // масштаба этого сервиса (штучные приглашения, не поток) риск принят
     // осознанно — блокировка на всё время accept усложнила бы код ради
     // исчезающе редкого случая.
-    if (find_membership(db, user_id)) {
-        return {AcceptStatus::kAlreadyHasLedger, {}, {}};
+    auto existing = find_membership(db, user_id);
+    if (existing && !replace_empty_ledger) {
+        return {AcceptStatus::kAlreadyHasLedger, {}, {}, ledger_is_empty(db, existing->ledger_id)};
     }
 
     std::string hash = hash_token(raw_token);
     auto tx = db.begin_transaction();
+
+    if (existing) {
+        // FOR UPDATE на строку потока — next_seq() в push_batch обновляет
+        // ту же строку, так что одновременный push в этот леджер либо уже
+        // закоммичен (seq > 0, отказ ниже), либо ждёт нашего коммита и
+        // упадёт на уже удалённом леджере. Проверка пустоты — ПОСЛЕ
+        // блокировки, иначе между ней и DELETE мог бы проскочить push.
+        auto seq = tx.exec("SELECT seq FROM change_stream WHERE id = $1 FOR UPDATE",
+                           {existing->ledger_id});
+        bool empty = existing->role == "owner" && !seq.rows.empty() &&
+                     seq.rows.at(0).fields.at(0) == "0" &&
+                     tx.exec("SELECT 1 FROM ledger_member WHERE ledger_id = $1 AND user_id <> $2 LIMIT 1",
+                             {existing->ledger_id, user_id})
+                         .rows.empty();
+        if (!empty) return {AcceptStatus::kAlreadyHasLedger, {}, {}, false}; // ROLLBACK
+        // Тот же каскад, что в account_deletion_repo::delete_own_account:
+        // device/ledger_invite/ledger_member уходят вместе с леджером,
+        // change_stream — следом (ON DELETE RESTRICT, см. ledger.sql).
+        // seq = 0 означает, что курсор леджерного потока на любом устройстве
+        // этого пользователя тоже 0 — после переезда pull нового леджера
+        // начнётся с начала, ничего не пропустит.
+        tx.exec("DELETE FROM ledger WHERE id = $1", {existing->ledger_id});
+        tx.exec("DELETE FROM change_stream WHERE id = $1", {existing->ledger_id});
+    }
 
     // app_user — ДО UPDATE ledger_invite: used_by ссылается на app_user(id)
     // (FK), а этот пользователь мог никогда раньше не обращаться к

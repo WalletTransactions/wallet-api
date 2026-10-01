@@ -617,10 +617,17 @@ paths:
               type: object
               properties:
                 token: {type: string, description: "Сырой токен из ссылки (не хэш)"}
+                replace_empty_ledger:
+                  type: boolean
+                  default: false
+                  description: |
+                    Согласие удалить свой ПУСТОЙ леджер (см. `ledger_empty` в
+                    ответе `409`) и принять приглашение — одной транзакцией.
+                    Непустой леджер не удаляется — ответ всё равно `409`.
               required: [token]
       responses:
         "400":
-          description: Некорректный JSON или пустой token
+          description: Некорректный JSON, пустой token или replace_empty_ledger не boolean
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
@@ -632,8 +639,17 @@ paths:
             У принимающего уже есть свой леджер (MVP — один леджер на
             пользователя, см. `org/docs/TODO_mobile_sync.md`, п. 9.3) —
             приглашение НЕ расходуется, им ещё можно воспользоваться.
+            `ledger_empty: true` — леджер пуст (вызывающий в нём один, и в
+            него ни разу ничего не записывалось): повтор с
+            `replace_empty_ledger: true` заменит его приглашённым.
           content:
-            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {type: string}
+                  ledger_empty: {type: boolean}
+                required: [error, ledger_empty]
         "410":
           description: Токен не найден, уже использован, отозван или истёк срок
           content:
