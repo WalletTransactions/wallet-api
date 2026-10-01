@@ -62,7 +62,8 @@ CREATE TABLE account (
 
     name        text     NOT NULL,
     comment     text     NOT NULL DEFAULT '',
-    icon_uuid   uuid     NOT NULL REFERENCES icon (uuid) ON DELETE RESTRICT,
+    icon_uuid   uuid     NOT NULL REFERENCES icon (uuid)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
     is_archived boolean  NOT NULL DEFAULT false,
     -- IN (0, 1, 2), а не просто >= 0, в отличие от icon.icon_type: там
     -- ограничение снято из-за унаследованных мусорных значений в реальных

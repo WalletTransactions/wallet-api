@@ -14,8 +14,10 @@ CREATE TABLE currency_pair (
     updated_by        uuid REFERENCES device (id) ON DELETE SET NULL,
 
     symbol            text     NOT NULL,
-    base_currency_uuid  uuid   NOT NULL REFERENCES currency (uuid) ON DELETE RESTRICT,
-    quote_currency_uuid uuid   NOT NULL REFERENCES currency (uuid) ON DELETE RESTRICT,
+    base_currency_uuid  uuid   NOT NULL REFERENCES currency (uuid)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
+    quote_currency_uuid uuid   NOT NULL REFERENCES currency (uuid)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
     "precision"       smallint NOT NULL DEFAULT 5 CHECK ("precision" BETWEEN 0 AND 10),
 
     CONSTRAINT ck_currency_pair_sides CHECK (base_currency_uuid <> quote_currency_uuid)

@@ -34,6 +34,16 @@ DeleteStatus delete_own_account(db::Database& db, const std::string& user_id) {
         }
     }
 
+    // Каскад от ledger идёт вложенными запросами (ledger → currency, ledger →
+    // account → account_operating), и ссылки внутри леджера проверялись бы в
+    // конце каждого — currency уходит раньше ссылающегося account_operating,
+    // 23503. Эти ключи DEFERRABLE (миграция 000025): проверка — при COMMIT,
+    // когда каскад снял всё.
+    tx.exec("SET CONSTRAINTS account_operating_currency_uuid_fkey, "
+            "currency_pair_base_currency_uuid_fkey, currency_pair_quote_currency_uuid_fkey, "
+            "account_icon_uuid_fkey, currency_icon_uuid_fkey, "
+            "fk_operation_acc_fr, fk_operation_acc_to DEFERRED");
+
     for (const auto& ledger_id : owned_ledger_ids) {
         // ON DELETE CASCADE (wallet-api/schema/table/*.sql) снимает разом
         // ledger_member/ledger_invite/device/account/account_operating/

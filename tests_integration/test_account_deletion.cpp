@@ -81,6 +81,77 @@ TEST(delete_own_account_sole_owner_wipes_ledger_and_all_its_data) {
     CHECK(!app_user_exists(*db, owner.user_id));
 }
 
+// Регрессия 2026-10-01 (org/docs/TODO_telegram_bot.md, шаг 8): у леджера, где есть
+// своя валюта и кошелёк в ней, каскад падал на RESTRICT-ключе
+// account_operating_currency_uuid_fkey — RESTRICT проверяется сразу, а каскад
+// удалял currency раньше account_operating. Здесь все ключи, которые до миграции
+// 000025 были RESTRICT или неоткладываемыми: своя иконка (account/currency →
+// icon), своя валюта (account_operating → currency), пара своих валют
+// (currency_pair → currency) и операция (operation → account).
+TEST(delete_own_account_wipes_ledger_with_own_icon_currency_pair_and_wallet) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+
+    auto shared_icon = fixture::make_reference_icon_with_sha256(*db);
+    std::string own_icon = uuidgen::v4();
+    auto icon_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO icon (uuid, ledger_id, seq, name, content_sha256, icon_type) "
+             "VALUES ($1, $2, $3, $4, decode($5, 'hex'), 0)",
+             {own_icon, owner.ledger_id, icon_seq.rows.at(0).fields.at(0), "own-icon-" + own_icon,
+              shared_icon.sha256_hex});
+
+    std::string base = fixture::make_currency(*db, owner.ledger_id, own_icon);
+    std::string quote = fixture::make_currency(*db, owner.ledger_id, own_icon);
+    auto pair_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO currency_pair (uuid, ledger_id, seq, symbol, base_currency_uuid, quote_currency_uuid) "
+             "VALUES ($1, $2, $3, 'X/Y', $4, $5)",
+             {uuidgen::v4(), owner.ledger_id, pair_seq.rows.at(0).fields.at(0), base, quote});
+
+    std::string wallet = add_account(*db, owner.ledger_id, own_icon);
+    auto op_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO account_operating (uuid, ledger_id, seq, currency_uuid) VALUES ($1, $2, $3, $4)",
+             {wallet, owner.ledger_id, op_seq.rows.at(0).fields.at(0), base});
+    std::string category = add_account(*db, owner.ledger_id, own_icon);
+    auto operation_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO operation (uuid, ledger_id, seq, \"date\", acc_fr_uuid, acc_to_uuid, amount) "
+             "VALUES ($1, $2, $3, now(), $4, $5, 350)",
+             {uuidgen::v4(), owner.ledger_id, operation_seq.rows.at(0).fields.at(0), wallet, category});
+
+    auto status = account_deletion_repo::delete_own_account(*db, owner.user_id);
+    REQUIRE(status == account_deletion_repo::DeleteStatus::kOk);
+
+    CHECK(!ledger_exists(*db, owner.ledger_id));
+    CHECK(!account_exists(*db, owner.ledger_id, wallet));
+    CHECK(db->exec("SELECT 1 FROM currency WHERE uuid IN ($1, $2)", {base, quote}).rows.empty());
+    CHECK(db->exec("SELECT 1 FROM icon WHERE uuid = $1", {own_icon}).rows.empty());
+    CHECK(!change_stream_exists(*db, owner.ledger_id));
+    CHECK(!app_user_exists(*db, owner.user_id));
+    // Общая иконка и blob — не данные леджера, каскад их не трогает.
+    CHECK(!db->exec("SELECT 1 FROM icon WHERE uuid = $1", {shared_icon.uuid}).rows.empty());
+}
+
+// Жёсткий DELETE используемой валюты вне delete_own_account по-прежнему
+// отклоняется сразу: ключ DEFERRABLE, но INITIALLY IMMEDIATE.
+TEST(hard_delete_of_currency_used_by_wallet_is_still_rejected) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+    std::string icon = fixture::make_reference_icon(*db);
+    std::string currency = fixture::make_currency(*db, owner.ledger_id, icon);
+    std::string wallet = add_account(*db, owner.ledger_id, icon);
+    auto op_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO account_operating (uuid, ledger_id, seq, currency_uuid) VALUES ($1, $2, $3, $4)",
+             {wallet, owner.ledger_id, op_seq.rows.at(0).fields.at(0), currency});
+
+    bool caught_fk_violation = false;
+    try {
+        db->exec("DELETE FROM currency WHERE uuid = $1", {currency});
+    } catch (const db::QueryError& e) {
+        caught_fk_violation = e.sqlstate == "23503";
+    }
+    CHECK(caught_fk_violation);
+    CHECK(!db->exec("SELECT 1 FROM currency WHERE uuid = $1", {currency}).rows.empty());
+}
+
 TEST(delete_own_account_owner_with_other_members_is_rejected_untouched) {
     auto db = fixture::open();
     auto owner = fixture::make_identity(*db);

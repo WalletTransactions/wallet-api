@@ -37,7 +37,9 @@ enum class DeleteStatus {
 //      currency_pair/currency_pair_rate ЭТОГО леджера (см. ON DELETE CASCADE
 //      у каждой из них в wallet-api/schema/table/*.sql — ledger_id заведён как
 //      единица владения именно ради того, чтобы это был один каскад, а не
-//      десяток ручных DELETE в правильном порядке). Следом — DELETE FROM
+//      десяток ручных DELETE в правильном порядке; ключи между таблицами
+//      леджера на время транзакции отложены до COMMIT — см. миграцию
+//      000025, иначе вложенный каскад падает на порядке). Следом — DELETE FROM
 //      change_stream: ledger.id REFERENCES change_stream ON DELETE RESTRICT
 //      (см. ledger.sql) — поток обязан пережить сам леджер РОВНО настолько,
 //      сколько нужно, чтобы не остаться осиротевшим; к этому моменту леджер

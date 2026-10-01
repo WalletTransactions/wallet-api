@@ -11,6 +11,8 @@
 --
 -- FK на currency простой, без ledger_id: валюта бывает и общей, и локальной,
 -- составной ключ арендатора здесь не построить (см. currency_pair.sql).
+-- DEFERRABLE, а не RESTRICT: удаление аккаунта откладывает проверку до COMMIT,
+-- иначе каскад от ledger падает на порядке (миграция 000025, README.md, `icon`).
 CREATE TABLE account_operating (
     uuid          uuid        NOT NULL,
     ledger_id     uuid        NOT NULL,
@@ -19,7 +21,8 @@ CREATE TABLE account_operating (
     updated_at    timestamptz NOT NULL DEFAULT now(),
     updated_by    uuid REFERENCES device (id) ON DELETE SET NULL,
 
-    currency_uuid uuid NOT NULL REFERENCES currency (uuid) ON DELETE RESTRICT,
+    currency_uuid uuid NOT NULL REFERENCES currency (uuid)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
 
     CONSTRAINT pk_account_operating PRIMARY KEY (ledger_id, uuid),
     CONSTRAINT fk_account_operating_account

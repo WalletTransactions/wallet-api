@@ -39,9 +39,11 @@ CREATE TABLE operation (
 
     CONSTRAINT pk_operation PRIMARY KEY (ledger_id, uuid),
     CONSTRAINT fk_operation_acc_fr
-        FOREIGN KEY (ledger_id, acc_fr_uuid) REFERENCES account (ledger_id, uuid),
+        FOREIGN KEY (ledger_id, acc_fr_uuid) REFERENCES account (ledger_id, uuid)
+        DEFERRABLE INITIALLY IMMEDIATE, -- откладывает удаление аккаунта, миграция 000025
     CONSTRAINT fk_operation_acc_to
-        FOREIGN KEY (ledger_id, acc_to_uuid) REFERENCES account (ledger_id, uuid),
+        FOREIGN KEY (ledger_id, acc_to_uuid) REFERENCES account (ledger_id, uuid)
+        DEFERRABLE INITIALLY IMMEDIATE,
     CONSTRAINT ck_operation_sides CHECK (acc_fr_uuid <> acc_to_uuid)
 );
 

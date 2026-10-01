@@ -21,7 +21,8 @@ CREATE TABLE currency (
 
     name        text     NOT NULL,
     iso_code    text     NOT NULL,
-    icon_uuid   uuid     NOT NULL REFERENCES icon (uuid) ON DELETE RESTRICT,
+    icon_uuid   uuid     NOT NULL REFERENCES icon (uuid)
+        ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
     symbol      text     NOT NULL,
     "precision" smallint NOT NULL DEFAULT 2 CHECK ("precision" BETWEEN 0 AND 8)
 );
