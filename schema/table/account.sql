@@ -83,7 +83,11 @@ CREATE INDEX ix_account_sync ON account (ledger_id, seq);
 -- независимо создали «Продукты». Второй push получает нарушение этого индекса,
 -- сервер отвечает 409 с uuid выжившей строки, клиент переклеивает свои операции
 -- на него и снимает локальный дубль.
-CREATE UNIQUE INDEX uq_account_name ON account (ledger_id, name) WHERE deleted_at IS NULL;
+--
+-- Сравнение без учёта регистра, «ё» = «е» (миграция 000024): «Кафе» и «КАФЁ» — одно
+-- имя. То же правило у Android (AccountNames) и бота (text::normalize_name).
+CREATE UNIQUE INDEX uq_account_name ON account (ledger_id, lower(translate(name, 'Ёё', 'Ее')))
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX ix_account_icon ON account (icon_uuid);
 
@@ -99,7 +103,7 @@ COMMENT ON COLUMN account.deleted_at IS 'Момент мягкого удале�
 COMMENT ON COLUMN account.updated_at IS 'Момент последнего изменения строки — только диагностика.';
 COMMENT ON COLUMN account.updated_by IS 'Устройство, применившее последнее изменение этой строки.';
 COMMENT ON COLUMN account.name IS
-    'Название счёта/категории, видимое пользователю — уникально среди живых (deleted_at IS NULL) строк леджера, см. uq_account_name.';
+    'Название счёта/категории, видимое пользователю — уникально среди живых (deleted_at IS NULL) строк леджера без учёта регистра, «ё» = «е», см. uq_account_name.';
 COMMENT ON COLUMN account.comment IS 'Свободный комментарий пользователя к счёту/категории.';
 COMMENT ON COLUMN account.icon_uuid IS 'Иконка счёта/категории.';
 COMMENT ON COLUMN account.is_archived IS

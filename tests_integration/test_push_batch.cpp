@@ -234,6 +234,34 @@ TEST(push_batch_rejects_duplicate_account_name_with_existing_uuid) {
     CHECK_EQ(count.rows.at(0).fields.at(0), std::string("0"));
 }
 
+// Миграция 000024: имя уникально без учёта регистра, «ё» = «е» — «КАФЁ» против живой
+// «Кафе» тот же конфликт с existing_uuid, а не голое нарушение индекса.
+TEST(push_batch_duplicate_account_name_ignores_case_and_yo) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string suffix = " " + uuidgen::v4();
+
+    std::string first_uuid = uuidgen::v4();
+    json first_changes = {
+        {"account", json::array({make_account_row(first_uuid, icon_uuid, "Кафе" + suffix)})}};
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), first_changes)
+                .http_status == 200);
+
+    std::string second_uuid = uuidgen::v4();
+    json second_changes = {
+        {"account", json::array({make_account_row(second_uuid, icon_uuid, "КАФЁ" + suffix)})}};
+    auto second = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      second_changes);
+
+    CHECK_EQ(second.http_status, 409);
+    json body = json::parse(second.response_body);
+    REQUIRE(body.contains("conflicts"));
+    REQUIRE(body.at("conflicts").size() == static_cast<size_t>(1));
+    CHECK_EQ(body.at("conflicts")[0].at("reason").get<std::string>(), std::string("duplicate_name"));
+    CHECK_EQ(body.at("conflicts")[0].at("existing_uuid").get<std::string>(), first_uuid);
+}
+
 TEST(push_then_pull_round_trips_amount_as_string_not_number) {
     auto db = fixture::open();
     auto identity = fixture::make_identity(*db);

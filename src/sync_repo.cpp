@@ -221,8 +221,11 @@ std::vector<Conflict> diagnose_account_conflicts(db::Database& db, const std::st
         if (!row.contains("uuid") || !row.contains("name")) continue;
         std::string uuid = row.at("uuid").get<std::string>();
         std::string name = row.at("name").get<std::string>();
+        // Выражение — то же, что у uq_account_name (без учёта регистра, «ё» = «е»):
+        // иначе «кафе» против выжившей «Кафе» упало бы на индексе без existing_uuid.
         auto res = db.exec(
-            "SELECT uuid FROM account WHERE ledger_id = $1 AND name = $2 "
+            "SELECT uuid FROM account WHERE ledger_id = $1 "
+            "AND lower(translate(name, 'Ёё', 'Ее')) = lower(translate($2, 'Ёё', 'Ее')) "
             "AND deleted_at IS NULL AND uuid <> $3",
             {ledger_id, name, uuid});
         if (!res.rows.empty()) {
