@@ -1,8 +1,10 @@
 build
+build-loadtest
 out
 logs
 .env
 .env.example
 Containerfile
-.containerignore
+.dockerignore
 README.md
+.git
