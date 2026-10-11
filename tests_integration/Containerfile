@@ -29,8 +29,9 @@ COPY third_party/ third_party/
 COPY scripts/ scripts/
 COPY tests_integration/ tests_integration/
 
+ARG BUILD_JOBS=3
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DWALLET_API_BUILD_TESTS=OFF \
         -DWALLET_API_BUILD_INTEGRATION_TESTS=ON \
-    && cmake --build build --target wallet_api_integration_tests --config Release -j"$(nproc)"
+    && cmake --build build --target wallet_api_integration_tests --config Release -j"${BUILD_JOBS}"
 
 ENTRYPOINT ["/src/build/tests_integration/wallet_api_integration_tests"]

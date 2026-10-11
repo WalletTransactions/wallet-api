@@ -46,9 +46,10 @@ COPY scripts/ scripts/
 # поэтому WALLET_API_BUILD_TESTS=OFF обязателен: по умолчанию (ON, см.
 # CMakeLists.txt) configure упал бы на add_subdirectory(tests) с "not an
 # existing directory". Тот же приём, что в Containerfile google-auth.
+ARG BUILD_JOBS=3
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DWALLET_API_BUILD_TESTS=OFF \
         -DGIT_COMMIT="${GIT_COMMIT}" \
-    && cmake --build build --config Release -j"$(nproc)"
+    && cmake --build build --config Release -j"${BUILD_JOBS}"
 
 FROM debian:bookworm-slim AS runtime
 
