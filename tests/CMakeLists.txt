@@ -25,20 +25,21 @@ add_executable(wallet_api_tests
 
     ${CMAKE_SOURCE_DIR}/src/session.cpp
     ${CMAKE_SOURCE_DIR}/src/access.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/jwt_claims.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/util/metrics.cpp
     ${CMAKE_SOURCE_DIR}/src/sync_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/base64.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/crypto.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/jwt.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/jwks.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/crypto.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwks.cpp
+    ${WALLET_COMMON_DIR}/util/log.cpp
 )
 
 target_include_directories(wallet_api_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
+    ${WALLET_COMMON_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 

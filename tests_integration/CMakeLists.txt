@@ -43,15 +43,18 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/invites_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_pairs_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/account_deletion_repo.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/uuid.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/log.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/crypto.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/hex.cpp
+    ${WALLET_COMMON_DIR}/util/uuid.cpp
+    ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/crypto.cpp
+    # crypto.cpp (wallet-common) — RsaSigningKey::kid() кодирует base64.
+    ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/hex.cpp
 )
 
 target_include_directories(wallet_api_integration_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
+    ${WALLET_COMMON_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 

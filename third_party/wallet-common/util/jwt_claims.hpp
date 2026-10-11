@@ -1,10 +1,6 @@
 // Проверка iss/aud/scope access-токена google-auth
 // (org/docs/TODO_telegram_tokens.md, шаг 2). Подпись и exp проверяет
 // util/jwt — сюда приходит уже проверенный payload.
-//
-// Одинаковые копии в google-auth, wallet-api, wallet-report, wallet-gateway
-// (общей библиотеки нет, см. TODO_telegram_bot.md, «Открытые вопросы»).
-// Меняете здесь — меняйте во всех.
 #pragma once
 
 #include <string>

@@ -46,6 +46,13 @@ void set_build_info(const std::string& service, const std::string& version,
 void inc_counter(const std::string& name, const std::string& help, const std::string& label,
                  const std::string& label_value);
 
+// Гистограмма длительности с одним лейблом — вызовы внешних API бота
+// (tg_telegram_api_duration_seconds{method}, tg_wallet_push_duration_seconds
+// {status}). Бакеты — те же, что у http_request_duration_seconds. label_value
+// — только литералы из кода, как у inc_counter.
+void observe_duration(const std::string& name, const std::string& help, const std::string& label,
+                      const std::string& label_value, double seconds);
+
 // Gauge без лейблов (tg_last_poll_ok_timestamp_seconds и т.п.).
 void set_gauge(const std::string& name, const std::string& help, double value);
 

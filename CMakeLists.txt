@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Общий код сервисов (util/: jwt, jwks, crypto, log, metrics, ...) — копия
+# репозитория wallet-common, обновляется его scripts/vendor.sh; руками не править.
+set(WALLET_COMMON_DIR ${CMAKE_SOURCE_DIR}/third_party/wallet-common)
+
 # OpenSSL — только для RSA-SHA256-verify (проверка подписи access-токена по
 # публичному ключу с JWKS auth-сервиса, см. src/util/crypto.cpp — никакого
 # приватного ключа/секрета тут нет, ровно как в wallet-gateway). PostgreSQL —
@@ -80,21 +84,22 @@ add_executable(wallet_api
     src/account_deletion_repo.cpp
     src/account_deletion.cpp
     src/docs.cpp
-    src/util/base64.cpp
-    src/util/crypto.cpp
-    src/util/hex.cpp
-    src/util/jwt.cpp
-    src/util/jwt_claims.cpp
-    src/util/jwks.cpp
-    src/util/uuid.cpp
-    src/util/dotenv.cpp
-    src/util/log.cpp
-    src/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/crypto.cpp
+    ${WALLET_COMMON_DIR}/util/hex.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/util/jwks.cpp
+    ${WALLET_COMMON_DIR}/util/uuid.cpp
+    ${WALLET_COMMON_DIR}/util/dotenv.cpp
+    ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/metrics.cpp
 )
 
 target_include_directories(wallet_api PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
+    ${WALLET_COMMON_DIR}
     ${CMAKE_BINARY_DIR}/generated
 )
 

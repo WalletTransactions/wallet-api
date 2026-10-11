@@ -136,8 +136,9 @@ void write_line(const std::string& level, const std::string& message,
     // error_handler_t::replace, не strict (умолчание) — details теперь может
     // нести сырое тело HTTP-запроса/ответа (см. debug(..., {"request_body"...})
     // в set_logger, main.cpp), а оно не обязано быть валидным UTF-8 (не
-    // текстовый Content-Type — например, blob, см. blob.cpp — или оборванная
-    // многобайтовая последовательность на границе обрезки). strict уронил бы
+    // текстовый Content-Type — например, blob wallet-api, который гейтвей
+    // проксирует как есть, — или оборванная многобайтовая последовательность
+    // на границе обрезки). strict уронил бы
     // всю запись лога исключением из-за одного нетекстового поля; replace
     // просто подставляет U+FFFD на невалидных байтах, сама строка не теряется.
     std::string line = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);

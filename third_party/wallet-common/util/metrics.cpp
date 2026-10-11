@@ -76,6 +76,21 @@ struct Gauge {
 };
 std::map<std::string, Gauge> g_gauges;
 
+struct HistogramFamily {
+    std::string help;
+    std::string label;
+    std::map<std::string, HistogramState> values; // label_value -> гистограмма
+};
+std::map<std::string, HistogramFamily> g_histograms;
+
+void observe(HistogramState& h, double seconds) {
+    h.count++;
+    h.sum += seconds;
+    for (std::size_t i = 0; i < kBucketsSeconds.size(); ++i) {
+        if (seconds <= kBucketsSeconds[i]) h.bucket_counts[i]++;
+    }
+}
+
 // Единственные спецсимволы, значимые в значении лейбла текстового формата
 // экспозиции — обратный слэш и двойная кавычка. Перевод строки в
 // method/route не встречается — это литералы из кода (HTTP-метод и
@@ -99,12 +114,16 @@ void observe_http_request(const std::string& method, const std::string& route, i
 
     g_requests_total[{method, route, status}]++;
 
-    HistogramState& h = g_duration[{method, route}];
-    h.count++;
-    h.sum += seconds;
-    for (std::size_t i = 0; i < kBucketsSeconds.size(); ++i) {
-        if (seconds <= kBucketsSeconds[i]) h.bucket_counts[i]++;
-    }
+    observe(g_duration[{method, route}], seconds);
+}
+
+void observe_duration(const std::string& name, const std::string& help, const std::string& label,
+                      const std::string& label_value, double seconds) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    HistogramFamily& f = g_histograms[name];
+    f.help = help;
+    f.label = label;
+    observe(f.values[label_value], seconds);
 }
 
 void set_build_info(const std::string& service, const std::string& version,
@@ -138,6 +157,20 @@ std::string render() {
         out << "# TYPE " << name << " counter\n";
         for (const auto& [value, count] : f.values) {
             out << name << "{" << f.label << "=\"" << escape_label(value) << "\"} " << count << "\n";
+        }
+    }
+    for (const auto& [name, f] : g_histograms) {
+        out << "# HELP " << name << " " << f.help << "\n";
+        out << "# TYPE " << name << " histogram\n";
+        for (const auto& [value, h] : f.values) {
+            std::string labels = f.label + "=\"" + escape_label(value) + "\"";
+            for (std::size_t i = 0; i < kBucketsSeconds.size(); ++i) {
+                out << name << "_bucket{" << labels << ",le=\"" << kBucketsSeconds[i] << "\"} " << h.bucket_counts[i]
+                    << "\n";
+            }
+            out << name << "_bucket{" << labels << ",le=\"+Inf\"} " << h.count << "\n";
+            out << name << "_sum{" << labels << "} " << h.sum << "\n";
+            out << name << "_count{" << labels << "} " << h.count << "\n";
         }
     }
     for (const auto& [name, g] : g_gauges) {
