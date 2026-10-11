@@ -4,6 +4,8 @@
 #include <optional>
 #include <regex>
 
+#include "util/log.hpp"
+
 using nlohmann::json;
 
 namespace sync_repo {
@@ -206,7 +208,22 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
         if (inserted.rows.empty()) throw RowExists{spec.name, row_uuid};
         return;
     }
-    tx.exec(sql + " DO UPDATE SET " + update_sql, params);
+    // Конфликт по голому uuid (ReferenceOrLedger без conflict_columns) находит
+    // строку любого владельца — в том числе общую (ledger_id IS NULL) или чужого
+    // леджера. Без условия ниже UPDATE перезаписывал её и ставил seq из потока
+    // ЭТОГО леджера, а ledger_id не менял: общая иконка получала seq = 21 при
+    // голове потока справочников 14, и каждый pull после этого видел курсор
+    // «впереди головы» и сбрасывал поток (реальный случай 2026-10-10: телефон
+    // вернул скачанные общие иконки обратно push'ем). Чужую строку не трогаем
+    // вовсе — общие справочники пишет только сервер.
+    std::string guard = spec.scope == Scope::ReferenceOrLedger && spec.conflict_columns.empty()
+                            ? " WHERE " + spec.name + ".ledger_id = EXCLUDED.ledger_id"
+                            : "";
+    auto applied = tx.exec(sql + " DO UPDATE SET " + update_sql + guard + " RETURNING uuid", params);
+    if (applied.rows.empty()) {
+        applog::warn("push row skipped: uuid belongs to a shared or foreign row",
+                     {{"event", "sync_push_foreign_row_skipped"}, {"table", spec.name}, {"uuid", row_uuid}});
+    }
 }
 
 // Пересчитывает конфликты дублирующегося имени счёта заново, читая живую
@@ -490,27 +507,54 @@ PullResult run_pull(db::Database& db, const std::string& sql, std::vector<std::s
     return result;
 }
 
+// Константный id потока справочников — см. schema/table/change_stream.sql.
+constexpr const char* kReferenceStreamId = "00000000-0000-0000-0000-000000000001";
+
+// Голова потока — change_stream.seq; нет строки (леджер удалён) — 0.
+int64_t stream_head(db::Database& db, const std::string& stream_id) {
+    auto res = db.exec("SELECT seq FROM change_stream WHERE id = $1", {stream_id});
+    if (res.rows.empty()) return 0;
+    return std::stoll(res.rows.at(0).fields.at(0));
+}
+
+// Курсор дальше головы — см. PullResult::reset. Голова только растёт, так
+// что гонка с параллельным push ложного сброса не даст: честный курсор
+// всегда <= головы на момент любого последующего чтения.
+bool rewind_if_ahead(db::Database& db, const std::string& stream_id, int64_t& cursor) {
+    if (cursor <= 0 || cursor <= stream_head(db, stream_id)) return false;
+    applog::warn("pull cursor ahead of stream head — rewinding to 0",
+                 {{"event", "sync_pull_cursor_reset"}, {"stream_id", stream_id}, {"cursor", cursor}});
+    cursor = 0;
+    return true;
+}
+
 } // namespace
 
 PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor,
                                int limit) {
+    bool reset = rewind_if_ahead(db, ledger_id, cursor);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/true);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $2) AS max_seq FROM "
                        "(SELECT seq FROM candidates ORDER BY seq LIMIT $3) top_n) "
                        "SELECT tbl, seq, data FROM candidates, cutoff "
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
-    return run_pull(db, sql, {ledger_id, std::to_string(cursor), std::to_string(limit)}, cursor);
+    auto result = run_pull(db, sql, {ledger_id, std::to_string(cursor), std::to_string(limit)}, cursor);
+    result.reset = reset;
+    return result;
 }
 
 PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit) {
+    bool reset = rewind_if_ahead(db, kReferenceStreamId, cursor);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/false);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $1) AS max_seq FROM "
                        "(SELECT seq FROM candidates ORDER BY seq LIMIT $2) top_n) "
                        "SELECT tbl, seq, data FROM candidates, cutoff "
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
-    return run_pull(db, sql, {std::to_string(cursor), std::to_string(limit)}, cursor);
+    auto result = run_pull(db, sql, {std::to_string(cursor), std::to_string(limit)}, cursor);
+    result.reset = reset;
+    return result;
 }
 
 } // namespace sync_repo

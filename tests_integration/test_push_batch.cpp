@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <future>
+#include <limits>
 #include <optional>
 #include <thread>
 #include <type_traits>
@@ -741,4 +742,66 @@ TEST(provisioning_keeps_email_when_token_has_none_and_reports_role) {
     CHECK_EQ(bot.role, std::string("owner"));
     auto email = db->exec("SELECT email FROM app_user WHERE id = $1", {identity.user_id});
     CHECK_EQ(email.rows.at(0).fields.at(0), std::string("integration-test@example.com"));
+}
+
+TEST(pull_with_cursor_ahead_of_stream_head_rewinds_to_zero) {
+    // Регрессия 2026-09-30: телефон пришёл с курсором 146 от прежнего
+    // леджера при голове 13 — pull отдавал пустоту с next_seq=146 навсегда,
+    // и операции, записанные ботом, на устройство не доезжали.
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+
+    std::string acc_uuid = uuidgen::v4();
+    json changes = {{"account", json::array({make_account_row(acc_uuid, icon_uuid, "Ahead " + acc_uuid)})}};
+    auto push_result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(push_result.http_status == 200);
+    int64_t head = json::parse(push_result.response_body).at("seq").get<int64_t>();
+
+    auto ahead = sync_repo::pull_ledger_stream(*db, identity.ledger_id, /*cursor=*/head + 100, /*limit=*/1000);
+    CHECK(ahead.reset);
+    CHECK_EQ(ahead.next_seq, head);
+    REQUIRE(ahead.changes.contains("account"));
+
+    // Курсор ровно на голове — обычный «догнали», без сброса.
+    auto caught_up = sync_repo::pull_ledger_stream(*db, identity.ledger_id, head, /*limit=*/1000);
+    CHECK(!caught_up.reset);
+    CHECK_EQ(caught_up.next_seq, head);
+    CHECK(caught_up.changes.empty());
+
+    auto reference = sync_repo::pull_reference_stream(*db, /*cursor=*/std::numeric_limits<int64_t>::max() / 2,
+                                                      /*limit=*/1);
+    CHECK(reference.reset);
+}
+
+TEST(push_does_not_overwrite_shared_reference_row_with_same_uuid) {
+    // Регрессия 2026-10-10: телефон вернул push'ем скачанные общие иконки —
+    // ON CONFLICT (uuid) DO UPDATE переписал им seq номером потока леджера
+    // (21 при голове справочников 14), и каждый pull справочников с тех пор
+    // видел курсор «впереди головы» и начинал поток с нуля.
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    auto shared = fixture::make_reference_icon_with_sha256(*db);
+
+    auto before = db->exec("SELECT seq, name, ledger_id IS NULL FROM icon WHERE uuid = $1", {shared.uuid});
+    REQUIRE(before.rows.size() == 1);
+
+    json changes = {{"icon", json::array({json{{"uuid", shared.uuid},
+                                                 {"name", "hijacked-" + shared.uuid},
+                                                 {"content_sha256", shared.sha256_hex},
+                                                 {"icon_type", 0}}})}};
+    auto push_result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(push_result.http_status == 200);
+
+    auto after = db->exec("SELECT seq, name, ledger_id IS NULL FROM icon WHERE uuid = $1", {shared.uuid});
+    REQUIRE(after.rows.size() == 1);
+    CHECK_EQ(after.rows.at(0).fields.at(0), before.rows.at(0).fields.at(0));
+    CHECK_EQ(after.rows.at(0).fields.at(1), before.rows.at(0).fields.at(1));
+    CHECK_EQ(after.rows.at(0).fields.at(2), std::string("t"));
+
+    // Голова справочников не ниже ни одной общей строки — иначе pull сбросится.
+    auto stream = db->exec(
+        "SELECT (SELECT seq FROM change_stream WHERE id = '00000000-0000-0000-0000-000000000001') "
+        ">= (SELECT max(seq) FROM icon WHERE ledger_id IS NULL)");
+    CHECK_EQ(stream.rows.at(0).fields.at(0), std::string("t"));
 }

@@ -135,10 +135,19 @@ void handle_pull(AppState& state, const httplib::Request& req, httplib::Response
     auto ledger_result = sync_repo::pull_ledger_stream(*state.db_pool->acquire(), ctx->ledger_id, ledger_cursor, limit);
     auto reference_result = sync_repo::pull_reference_stream(*state.db_pool->acquire(), reference_cursor, limit);
 
+    // ledger_id — чтобы клиент заметил смену леджера (другой пользователь
+    // при том же email, переход по инвайту) и сбросил курсор сам, не
+    // дожидаясь, пока старый курсор окажется дальше головы (reset).
     json out = {
-        {"ledger", {{"next_seq", ledger_result.next_seq}, {"changes", ledger_result.changes}}},
+        {"ledger",
+         {{"ledger_id", ctx->ledger_id},
+          {"next_seq", ledger_result.next_seq},
+          {"reset", ledger_result.reset},
+          {"changes", ledger_result.changes}}},
         {"reference",
-         {{"next_seq", reference_result.next_seq}, {"changes", reference_result.changes}}},
+         {{"next_seq", reference_result.next_seq},
+          {"reset", reference_result.reset},
+          {"changes", reference_result.changes}}},
     };
     res.set_content(out.dump(), kJsonContentType);
 }

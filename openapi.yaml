@@ -238,6 +238,12 @@ paths:
         `updated_at`, `updated_by` + бизнес-колонки. `amount`/`rate` — JSON
         строки (не голые числа) — иначе терялась бы точность, ради которой
         `numeric` вообще завели.
+
+        Курсор БОЛЬШЕ головы потока (такого seq сервер не выдавал — курсор от
+        другого леджера или пересозданной базы) — поток отдаётся с нуля и
+        `reset: true`; клиент просто сохраняет `next_seq`, как обычно.
+        `ledger.ledger_id` — леджер, к которому относится поток: клиент,
+        заметив смену, должен сам начать поток `ledger` с 0.
       tags: [sync]
       security: [{bearerAuth: [], sessionCookie: []}]
       parameters:
@@ -271,15 +277,18 @@ paths:
                   ledger:
                     type: object
                     properties:
+                      ledger_id: {type: string, format: uuid, description: "Леджер потока — смена означает, что курсор надо начать с 0"}
                       next_seq: {type: integer, format: int64}
+                      reset: {type: boolean, description: "Курсор был дальше головы потока — страница отдана с нуля"}
                       changes: {$ref: "#/components/schemas/SyncPullChanges"}
-                    required: [next_seq, changes]
+                    required: [ledger_id, next_seq, reset, changes]
                   reference:
                     type: object
                     properties:
                       next_seq: {type: integer, format: int64}
+                      reset: {type: boolean, description: "Курсор был дальше головы потока — страница отдана с нуля"}
                       changes: {$ref: "#/components/schemas/SyncPullChanges"}
-                    required: [next_seq, changes]
+                    required: [next_seq, reset, changes]
                 required: [ledger, reference]
 
   /sync/blobs:

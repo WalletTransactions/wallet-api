@@ -169,11 +169,19 @@ std::string create_only_violation(const nlohmann::json& changes);
 struct PullResult {
     int64_t next_seq;
     nlohmann::json changes; // {"account": [...], "operation": [...], ...}
+    // Курсор клиента оказался ДАЛЬШЕ головы потока (change_stream.seq) —
+    // такого seq сервер никогда не выдавал: курсор остался от другого
+    // леджера/пересозданной базы. Страница тогда отдана с нуля, клиенту
+    // нужно заменить курсор на next_seq как обычно (применение — upsert по
+    // uuid, повтор безопасен). Без этого pull молча возвращал бы пустоту
+    // навсегда — реальный случай 2026-09-30: курсор 146 при голове 13.
+    bool reset = false;
 };
 
 // Курсор — bigint клиента, лимит — сколько строк добирать (страница может
 // оказаться БОЛЬШЕ limit — см. README wallet-api/schema, "Курсор и страницы":
-// группа с одинаковым seq никогда не разрезается).
+// группа с одинаковым seq никогда не разрезается). Курсор больше головы
+// потока — см. PullResult::reset.
 PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor, int limit);
 PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit);
 
