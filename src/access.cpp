@@ -62,12 +62,11 @@ httplib::Server::HandlerResponse gate(const httplib::Request& req, httplib::Resp
     case jwt_claims::Result::Ok:
         return httplib::Server::HandlerResponse::Unhandled;
     case jwt_claims::Result::Legacy:
-        // До шага 3: старые токены (без aud) ещё живут до 15 минут после
-        // выката google-auth с шага 1 — пропускаем, но видно в логах и
-        // метрике jwt_claims_total{result="legacy"}.
-        applog::warn("access token without aud (legacy), accepted",
-                     {{"event", "jwt_legacy"}, {"sub", payload->value("sub", std::string{})}});
-        return httplib::Server::HandlerResponse::Unhandled;
+        // Токен без aud (выпущен до шага 1 TODO_telegram_tokens.md) — шаг 3:
+        // больше не пропускаем.
+        applog::warn("access token rejected", {{"event", "jwt_rejected"}, {"reason", "legacy"}});
+        reject(res, 401, "invalid_token", "токен старого формата — войдите заново");
+        return httplib::Server::HandlerResponse::Handled;
     case jwt_claims::Result::WrongIssuer:
     case jwt_claims::Result::WrongAudience:
         applog::warn("access token rejected", {{"event", "jwt_rejected"}, {"reason", jwt_claims::to_string(r)}});

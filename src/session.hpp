@@ -32,8 +32,8 @@ struct User {
     std::string device_id;
     std::string platform;
     // Claim "scope" как есть, через пробел (TODO_telegram_tokens.md,
-    // «Скоупы»). Пусто — старый токен без aud/scope (Legacy, см.
-    // util/jwt_claims.hpp): права у таких всегда были полные.
+    // «Скоупы»). Токены без aud/scope (Legacy, см. util/jwt_claims.hpp)
+    // отклоняет гейт в access.cpp, до хендлеров они не доходят.
     std::string scope;
 };
 

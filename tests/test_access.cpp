@@ -145,11 +145,13 @@ TEST(access_gate_end_to_end) {
         auto req = request("POST", "/sync/push", token(user_claims()));
         CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Unhandled);
     }
-    // Старый токен без aud — пропускается (до шага 3).
-    {
+    // Старый токен без aud — 401 (шаг 3), и на push, и на pull.
+    for (const char* path : {"/sync/push", "/sync/pull"}) {
         httplib::Response res;
-        auto req = request("POST", "/sync/push", token(json{{"sub", "user-1"}}));
-        CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Unhandled);
+        auto req = request(std::string(path) == "/sync/push" ? "POST" : "GET", path, token(json{{"sub", "user-1"}}));
+        CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
+        CHECK_EQ(res.status, 401);
+        CHECK(res.get_header_value("WWW-Authenticate").find("invalid_token") != std::string::npos);
     }
     // Токен другого сервиса — 401.
     {

@@ -63,8 +63,7 @@ std::optional<Context> authenticate_and_provision(AppState& state, const httplib
 
     auto identity = provisioning::ensure_identity(*state.db_pool->acquire(), user->user_id, user->email,
                                                    user->device_id, device_name, user->platform);
-    bool expense_only = !user->scope.empty() && !session::has_scope(*user, "wallet:write") &&
-                        session::has_scope(*user, "expense:write");
+    bool expense_only = !session::has_scope(*user, "wallet:write") && session::has_scope(*user, "expense:write");
     return Context{identity.ledger_id, user->device_id, identity.role, expense_only};
 }
 
