@@ -744,6 +744,34 @@ TEST(provisioning_keeps_email_when_token_has_none_and_reports_role) {
     CHECK_EQ(email.rows.at(0).fields.at(0), std::string("integration-test@example.com"));
 }
 
+TEST(browser_device_provisions_as_web_and_pushes_operation) {
+    // Веб пишет трату через /sync/push токеном браузерной сессии: google-auth
+    // выдаёт ей свой device_id на каждый вход (add-ai-expense-text, D1) —
+    // провижининг заводит устройство platform=web в том же леджере, а
+    // операция получает updated_by этого устройства.
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    auto accounts = seed_accounts(db, identity);
+
+    std::string web_device = uuidgen::v4();
+    auto web = provisioning::ensure_identity(*db, identity.user_id, "integration-test@example.com", web_device,
+                                             "Веб-браузер", "web");
+    CHECK_EQ(web.ledger_id, identity.ledger_id);
+
+    std::string op = uuidgen::v4();
+    json changes = {{"operation", json::array({operation_row(op, accounts, "450")})}};
+    auto pushed = push_batch_guarded(db, web.ledger_id, web_device, uuidgen::v4(), changes);
+    REQUIRE(pushed.http_status == 200);
+    CHECK_EQ(amount_of(*db, identity.ledger_id, op), std::string("450.00000000"));
+
+    auto device = db->exec("SELECT platform, ledger_id::text FROM device WHERE id = $1", {web_device});
+    REQUIRE(device.rows.size() == 1);
+    CHECK_EQ(device.rows.at(0).fields.at(0), std::string("web"));
+    CHECK_EQ(device.rows.at(0).fields.at(1), identity.ledger_id);
+    auto by = db->exec("SELECT updated_by::text FROM operation WHERE uuid = $1", {op});
+    CHECK_EQ(by.rows.at(0).fields.at(0), web_device);
+}
+
 TEST(pull_with_cursor_ahead_of_stream_head_rewinds_to_zero) {
     // Регрессия 2026-09-30: телефон пришёл с курсором 146 от прежнего
     // леджера при голове 13 — pull отдавал пустоту с next_seq=146 навсегда,

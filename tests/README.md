@@ -24,6 +24,7 @@ ctest --test-dir build --output-on-failure
 |---|---|
 | `test_session.cpp` | `session::current_user()` — Bearer/cookie (и приоритет Bearer над cookie), отказ без токена/с битым токеном/с неизвестным `kid`/с чужой подписью/с истёкшим `exp`, извлечение `device_id`/`platform` (пусто у "браузерного" токена) |
 | `test_sync_repo.cpp` | `sync_repo::push_tables()`/`pull_tables()` — нет дублей имён, `pull_tables() == push_tables()` (включая `icon` — метаданные, не содержимое, теперь обычная синхронизируемая таблица), `numeric_columns`/`hex_columns` — подмножества `columns`, именно `operation.amount`/`currency_pair_rate.rate` помечены numeric и только `icon.content_sha256` — hex, правильный `Scope` у каждой таблицы; `conflict_columns` — только у `currency_pair_rate`, равен `(ledger_id, currency_pair_uuid, date)` (см. `org/docs/TODO_mobile_sync.md`, "Открытые вопросы", почему именно у неё) |
+| `test_sync.cpp` | HTTP-пролог `/sync/push` и `/sync/pull` (`sync.cpp`, `authenticate_and_provision`) без базы: токен без `device_id` — `403 {"error": "device_required"}` на обоих маршрутах, без токена — `401` |
 
 `test_session.cpp` реально ходит по HTTP — но не наружу: `jwks::Cache`
 (util/jwks.cpp) не умеет принимать готовые ключи напрямую, только тянуть их

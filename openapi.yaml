@@ -179,8 +179,9 @@ paths:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
           description: |
-            Токен без claim'а `device_id` — этот эндпоинт только для
-            мобильного входа (браузерный вход такого claim'а не несёт);
+            Токен без claim'а `device_id` — `error`: `device_required`
+            (браузерная сессия, выпущенная до выдачи ей `device_id`: клиенту
+            стоит один раз повторить запрос после `/auth/refresh`);
             токен без `wallet:write` и `expense:write` (`insufficient_scope`,
             заголовок `WWW-Authenticate`). С `expense:write` — нарушение его
             границ, `error`: `only_operation` (в `changes` что-то кроме
@@ -264,7 +265,7 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токен без claim'а device_id
+          description: "Токен без claim'а device_id — `error`: `device_required` (см. `/sync/push`)"
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "200":

@@ -40,13 +40,13 @@ std::optional<Context> authenticate_and_provision(AppState& state, const httplib
         json_error(res, 401, "unauthenticated");
         return std::nullopt;
     }
-    // Браузерный вход не даёт device_id вообще (см. DeviceInfo, google-auth) —
-    // синк без устройства не имеет смысла: некуда провизионировать device,
-    // не с чем связать курсор.
+    // Синк без устройства не имеет смысла: некуда провизионировать device,
+    // не с чем связать курсор и updated_by. Браузер получает device_id на
+    // каждый вход (google-auth, «device_id у браузера»), но токен сессии,
+    // выпущенной раньше, его ещё не несёт — машинный код, а не фраза, чтобы
+    // веб отличил этот случай и повторил запрос один раз через /auth/refresh.
     if (user->device_id.empty()) {
-        json_error(res, 403,
-                   "этот эндпоинт только для мобильного входа — токен без claim'а device_id "
-                   "(см. README google-auth, «Мобильный вход»)");
+        json_error(res, 403, "device_required");
         return std::nullopt;
     }
 

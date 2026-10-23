@@ -22,8 +22,12 @@ add_executable(wallet_api_tests
     test_session.cpp
     test_sync_repo.cpp
     test_access.cpp
+    test_sync.cpp
 
     ${CMAKE_SOURCE_DIR}/src/session.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync.cpp
+    ${CMAKE_SOURCE_DIR}/src/provisioning.cpp
+    ${WALLET_COMMON_DIR}/util/uuid.cpp
     ${CMAKE_SOURCE_DIR}/src/access.cpp
     ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
     ${WALLET_COMMON_DIR}/util/metrics.cpp
