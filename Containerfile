@@ -70,6 +70,10 @@ COPY --from=build /src/build/wallet_api /app/wallet_api
 # build (это чистая статика, компилировать нечего).
 COPY openapi.yaml /app/openapi.yaml
 COPY third_party/swagger-ui/ /app/vendor/swagger-ui/
+# Миграции своей базы. Накатывает их wallet-infra/infra/env/migrate.sh из
+# ЭТОГО образа (копирует /migrations), а не из рабочей папки: схема всегда
+# той же версии, что и код, который на неё выкатывается.
+COPY migrations/ /migrations/
 
 # LOG_DIR не задан -> util/log.cpp пишет в stdout/stderr на Linux (см. README
 # google-auth, раздел "Логирование" — тут то же самое).
