@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  Все артефакты OpenSpec пишутся на русском; структурные заголовки OpenSpec и
+  ключевые слова SHALL/MUST — по-английски.
+  wallet-api — сервис записи кошелька (C++, cpp-httplib, PostgreSQL) и единственный
+  владелец схемы БД: миграции в migrations/NNNNNN_*.up/down.sql, справочный DDL в schema/.
+  wallet-report читает ту же базу ролью wallet_reader; wallet-web — через wallet-report.
+  Протокол синка /sync/push и /sync/pull: потоки ledger и reference, курсор seq (change_stream),
+  мягкое удаление через deleted_at. Клиенты синка: android-wallet (push+pull),
+  wallet-telegram (только push, create-only). Внешний трафик — через wallet-gateway (/api/*).
+  Аутентификация — JWT google-auth по JWKS; устройства (device) провизионирует сам wallet-api.
+  Общие планы — org/docs/TODO_*.md (синк — TODO_mobile_sync.md).
+
+rules:
+  specs:
+    - Не дублировать JSON-схемы из openapi.yaml — ссылаться на путь/operationId
+    - Каждое требование — с хотя бы одним сценарием WHEN/THEN
+  design:
+    - Явно указывать, нужна ли правка у клиентов синка (android-wallet, wallet-telegram) или в wallet-report
+    - Изменение схемы — новой миграцией с down-файлом, существующие миграции не править
+  tasks:
+    - Логика репозитория — с юнит-тестом в tests/ и интеграционным в tests_integration/
+    - Изменение API сопровождается правкой openapi.yaml и README.md
