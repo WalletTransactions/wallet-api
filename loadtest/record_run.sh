@@ -30,14 +30,10 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$SCRIPT_DIR/data"
 mkdir -p "$DATA_DIR"
 
-ENV_FILE="$WORKSPACE_DIR/wallet-infra/infra/db/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "Не найден $ENV_FILE — сначала: cp infra/db/.env.example infra/db/.env" >&2
-    exit 1
-fi
-set -a
-source "$ENV_FILE"
-set +a
+# Контур test: сеть, db и PERF_POSTGRES_* из его db.env
+# (wallet-infra/infra/env/loadtest_env.sh — prod запрещён).
+# shellcheck source=../../wallet-infra/infra/env/loadtest_env.sh
+source "$WORKSPACE_DIR/wallet-infra/infra/env/loadtest_env.sh"
 
 for bin in jq curl git; do
     command -v "$bin" >/dev/null 2>&1 || { echo "Нужен '$bin' на хосте." >&2; exit 1; }
@@ -63,7 +59,7 @@ TOKENS_FILE="${TOKENS_FILE:-independent_tokens.json}"
 TOKENS_PATH="$DATA_DIR/$(basename "$TOKENS_FILE")"
 VUS="${VUS:-20}"
 DURATION_SECS="${DURATION_SECS:-30}"
-ENVIRONMENT="${ENVIRONMENT:-local-docker-compose}"
+ENVIRONMENT="${ENVIRONMENT:-$LOADTEST_ENV}"
 VERSION="${VERSION:-}"
 POOL_SIZE="${POOL_SIZE:-}"
 
@@ -80,15 +76,8 @@ branch="${BRANCH:-$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD)}"
 
 echo "==> commit=$commit_sha branch=$branch сценарий=$SCENARIO_FILE VUS=$VUS DURATION=${DURATION_SECS}s токены=$(basename "$TOKENS_PATH")"
 
-db_container="$("$ENGINE" ps --filter "label=io.podman.compose.service=db" --format '{{.Names}}' | head -n1)"
-if [[ -z "$db_container" ]]; then
-    db_container="$("$ENGINE" ps --filter "label=com.docker.compose.service=db" --format '{{.Names}}' | head -n1)"
-fi
-if [[ -z "$db_container" ]]; then
-    echo "Не нашёл запущенный контейнер 'db'. Сначала: $ENGINE compose --env-file infra/db/.env up -d" >&2
-    exit 1
-fi
-db_network="$("$ENGINE" inspect "$db_container" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
+db_container="$LOADTEST_DB_CONTAINER"
+db_network="$LOADTEST_NETWORK"
 
 summary_path="$DATA_DIR/perf_${SCENARIO_NAME}_vus${VUS}.json"
 

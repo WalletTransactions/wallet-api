@@ -37,7 +37,11 @@
   отстало от чистки.
 
 ### Modified Capabilities
-<!-- в wallet-api пока нет спек -->
+- `sync-pull`: сброс курсора впереди головы получает `reset_reason: "ahead"`.
+- `ledger-provisioning`: устройство при каждом обращении переписывается на
+  текущий леджер пользователя (сейчас остаётся на прежнем — наблюдение Р11
+  baseline). Без этого подтверждение леджера после перехода не пишется, а
+  телефон ушедшего участника держит горизонт старого леджера.
 
 ## Impact
 
@@ -45,7 +49,8 @@
   `change_stream.purged_at`; комментарий к `device.last_ack_seq` меняет смысл
   (теперь это подтверждение, а не справка).
 - `src/sync.cpp` (`handle_pull`), `src/sync_repo.*` (подтверждение, горизонт,
-  чистка, `reset_reason`), настройки в `main.cpp`.
+  чистка, `reset_reason`), `src/provisioning.cpp` (`device.ledger_id`),
+  настройки в `main.cpp`.
 - `openapi.yaml`: параметр `ledger_id`, поле `reset_reason`; README, раздел про синк.
 - Клиенты: android-wallet — отдельный change `purge-synced-tombstones` (сброс с
   нуля с вычисткой локальных строк, параметр `ledger_id`). wallet-telegram —

@@ -15,7 +15,8 @@
    просто делит пул с чужими запросами — именно здесь мог бы проявиться
    Postgres-дедлок или зависание, если он есть.
 
-Нагрузка идёт через `wallet-gateway` (порт `8090`), тем же путём, что и
+Нагрузка идёт через `wallet-gateway` контура test (`:8091` с хоста,
+`wallet-gateway:8090` внутри сети `wallet-test`), тем же путём, что и
 реальный клиент — см. `../../wallet-report/loadtest/README.md`, "Разбор пути
 запроса" (тот же путь, просто `/sync/*` вместо `/api/reports/*`).
 
@@ -43,30 +44,31 @@ bash mint_tokens.sh
 - `data/same_ledger_tokens.json` — `LOADTEST_RACE_DEVICES` (по умолчанию 6)
   токенов ОДНОГО пользователя, разные `device_id` — один леджер на всех.
 
-Требует `google-auth/jwt_signing_key.pem` (см. `wallet-infra/README.md`) — минтер
-собирается сам при первом запуске (`LOADTEST_FORCE_REBUILD=1` — пересобрать).
+Нагрузка идёт только в контур **test** (`wallet-infra/infra/env/loadtest_env.sh`:
+prod запрещён): токены подписываются ключом test
+(`~/.config/wallet-secrets/test/jwt_signing_key.pem`), минтер собирается сам
+при первом запуске (`LOADTEST_FORCE_REBUILD=1` — пересобрать).
 
 ## Шаг 2. Прогнать сценарии
 
 ```bash
-# Ворота — 1 VU, 1 итерация:
-GATEWAY_URL=http://localhost:8090 TOKENS_FILE=./data/independent_tokens.json \
+# Ворота — 1 VU, 1 итерация (гейтвей test — :8091; :8090 — prod, туда нельзя):
+GATEWAY_URL=http://localhost:8091 TOKENS_FILE=./data/independent_tokens.json \
   k6 run k6/scenario_push_smoke.js
 
 # Пропускная способность (независимые леджеры):
-GATEWAY_URL=http://localhost:8090 TOKENS_FILE=./data/independent_tokens.json \
+GATEWAY_URL=http://localhost:8091 TOKENS_FILE=./data/independent_tokens.json \
   VUS=20 DURATION=2m k6 run k6/scenario_push_saturation.js
 
 # Гонка на ОДНОМ леджере (дедлоки/конкурентная запись):
-GATEWAY_URL=http://localhost:8090 TOKENS_FILE=./data/same_ledger_tokens.json \
+GATEWAY_URL=http://localhost:8091 TOKENS_FILE=./data/same_ledger_tokens.json \
   VUS=30 DURATION=1m k6 run k6/scenario_push_same_ledger_race.js
 ```
 
-Контейнером (сеть compose, имя обычно `servers_wallet-net` — уточните через
-`podman network ls`, если не совпадает):
+Контейнером — в сети контура test:
 
 ```bash
-podman run --rm --network servers_wallet-net \
+docker run --rm --network wallet-test \
   -v "$(pwd)/k6:/scripts:ro" -v "$(pwd)/data:/data:ro" \
   -e GATEWAY_URL=http://wallet-gateway:8090 -e TOKENS_FILE=/data/same_ledger_tokens.json \
   -e VUS=30 -e DURATION=1m \
@@ -79,15 +81,13 @@ podman run --rm --network servers_wallet-net \
 поведение, один и тот же код, просто N=1):
 
 ```bash
-# 1. "Как было" — servers/compose.loadtest-override.yaml уже держит
-#    wallet-api DATABASE_POOL_SIZE=1 (см. этот файл) — применить:
-podman compose --env-file infra/db/.env -f compose.yaml -f compose.loadtest-override.yaml \
-  up -d --build wallet-api
+# 1. "Как было" — wallet-api контура test с DATABASE_POOL_SIZE=1 на время прогона:
+bash -c 'source ../../wallet-infra/infra/env/loadtest_env.sh && loadtest_override wallet-api DATABASE_POOL_SIZE 1'
 VUS=30 DURATION=1m k6 run k6/scenario_push_same_ledger_race.js
 VUS=20 DURATION=2m k6 run k6/scenario_push_saturation.js
 
-# 2. "Как стало" — вернуть обычный compose.yaml (DATABASE_POOL_SIZE=8, дефолт):
-podman compose --env-file infra/db/.env up -d --build wallet-api
+# 2. "Как стало" — вернуть конфигурацию контура (DATABASE_POOL_SIZE=8, дефолт):
+bash -c 'source ../../wallet-infra/infra/env/loadtest_env.sh && loadtest_restore wallet-api'
 # те же два прогона
 ```
 
