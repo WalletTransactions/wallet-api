@@ -39,6 +39,16 @@ tags:
       удалять можно тоже только свои — общие видны, но read-only для этого
       API. `ledger_id` нигде не принимается от клиента (тот же принцип, что
       у `/sync/*`/`/api/ledger/*`).
+  - name: currencies
+    description: |
+      Свои валюты леджера с веба (change currency-ui-tweaks): создание,
+      правка, мягкое удаление, флаг «показывать в эквиваленте». Правила — те
+      же, что у формы валюты на телефоне: код и название уникальны среди
+      всех видимых живых валют (своих и общих), валюта кошелька или пары не
+      удаляется, код валюты пары не меняется. Общие валюты этим API не
+      меняются (`404`). Каждое изменение — один новый `seq` потока леджера,
+      на телефоны доходит обычным `GET /sync/pull`. Чтение справочника — в
+      wallet-report (`GET /api/reports/currencies`).
   - name: account
     description: |
       Самообслуживание — "Удалить аккаунт" (настройки wallet-web). Отдельно
@@ -169,8 +179,10 @@ paths:
             либо строка внутри `changes` не несёт обязательную для своей
             таблицы колонку (`error: invalid_row` — например, старая версия
             клиента ещё не отправляет колонку, добавленную в протокол
-            позже; `detail` называет отсутствующий ключ). Транзакция
-            батча в этом случае уже откачена целиком, как и при `409`.
+            позже; `detail` называет отсутствующий ключ). Исключение —
+            явно необязательные колонки (`currency.show_in_equivalent`):
+            их отсутствие не ошибка, а неверный тип — `invalid_row`.
+            Транзакция батча в этом случае уже откачена целиком, как и при `409`.
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
@@ -982,6 +994,145 @@ paths:
         "204":
           description: Курс удалён
 
+  /api/currencies:
+    post:
+      operationId: createCurrency
+      summary: Создать свою валюту леджера
+      description: |
+        `iso_code` приводится к верхнему регистру, края `name`/`symbol`
+        обрезаются. Пустой или не переданный `symbol` = `iso_code`,
+        `precision` по умолчанию 2, `show_in_equivalent` — `true`. Леджер
+        при необходимости создаётся (`provisioning::ensure_personal_ledger`).
+        Код и название сверяются со ВСЕМИ видимыми живыми валютами — своими
+        и общими.
+      tags: [currencies]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, minLength: 1}
+                iso_code: {type: string, minLength: 1}
+                icon_uuid: {type: string, format: uuid, description: "Общая иконка или иконка своего леджера"}
+                symbol: {type: string}
+                precision: {type: integer, minimum: 0, maximum: 8, default: 2}
+                show_in_equivalent: {type: boolean, default: true}
+              required: [name, iso_code, icon_uuid]
+      responses:
+        "400":
+          description: Невалидный JSON, пустое/не того типа поле, `precision` вне 0–8 или не целое, невидимая иконка
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyFieldError"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`duplicate` с `field` = `iso_code` | `name`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyConflict"}}
+        "201":
+          description: Валюта создана
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyEntry"}}
+
+  /api/currencies/{uuid}:
+    patch:
+      operationId: updateCurrency
+      summary: Изменить свою валюту
+      description: |
+        Любое непустое подмножество полей, те же проверки, что у создания.
+        Пустой `symbol` = (новый или текущий) `iso_code`. Смена `iso_code` у
+        валюты, входящей в живую пару (базой или котируемой), — `409
+        currency_in_pair`: символ пары составлен из кодов её валют; остальные
+        поля такой валюты правятся. Общая, чужая или удалённая валюта — `404`.
+      tags: [currencies]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: {type: string, minLength: 1}
+                iso_code: {type: string, minLength: 1}
+                icon_uuid: {type: string, format: uuid}
+                symbol: {type: string}
+                precision: {type: integer, minimum: 0, maximum: 8}
+                show_in_equivalent: {type: boolean}
+      responses:
+        "400":
+          description: Невалидный JSON, нет ни одного поля, поле не того типа/пустое, невидимая иконка
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyFieldError"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Нет леджера либо своей живой валюты с таким uuid (общие — сюда же)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`duplicate` (с `field`) или `currency_in_pair`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyConflict"}}
+        "200":
+          description: Обновлённая валюта
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyEntry"}}
+    delete:
+      operationId: deleteCurrency
+      summary: Удалить свою валюту
+      description: |
+        Мягкое удаление (tombstone уходит в поток леджера). Если на валюту
+        ссылается живой кошелёк (`account_operating`) или живая пара (базой
+        или котируемой) — `409 currency_in_use`.
+      tags: [currencies]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Нет леджера либо своей живой валюты с таким uuid (общие — сюда же)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`currency_in_use`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyConflict"}}
+        "204":
+          description: Валюта удалена
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1178,6 +1329,13 @@ components:
             icon_uuid: {type: string, format: uuid}
             symbol: {type: string}
             precision: {type: integer, minimum: 0, maximum: 8}
+            show_in_equivalent:
+              type: boolean
+              description: |
+                Необязательная колонка (change currency-ui-tweaks): ключа нет —
+                у новой валюты `true`, у существующей прежнее значение не
+                меняется (старый клиент о флаге не знает). Ключ есть, но не
+                boolean — `400 invalid_row`, `detail` называет поле.
           required: [name, iso_code, icon_uuid, symbol, precision]
 
     CurrencyPairPushRow:
@@ -1316,7 +1474,8 @@ components:
             icon_uuid: {type: string, format: uuid}
             symbol: {type: string}
             precision: {type: integer}
-          required: [name, iso_code, icon_uuid, symbol, precision]
+            show_in_equivalent: {type: boolean, description: "Показывать в выборе валюты эквивалента; валюты до миграции 000026 — true"}
+          required: [name, iso_code, icon_uuid, symbol, precision, show_in_equivalent]
 
     CurrencyPairPullRow:
       allOf:
@@ -1397,6 +1556,36 @@ components:
           type: string
           description: "Курс ПЕРЕД последним — для % изменения на клиенте (тот же приём, что Android CurrencyPairListAdapter); пустая строка, если такого нет"
       required: [uuid, symbol, precision, is_own, base_currency, quote_currency, latest_date, latest_rate, prev_rate]
+
+    CurrencyEntry:
+      type: object
+      description: Та же форма, что элемент `GET /api/reports/currencies` (wallet-report) — веб подставляет ответ в справочник без перезапроса.
+      properties:
+        uuid: {type: string, format: uuid}
+        name: {type: string}
+        iso_code: {type: string, description: "В верхнем регистре"}
+        symbol: {type: string}
+        precision: {type: integer, minimum: 0, maximum: 8}
+        icon_uuid: {type: string, format: uuid}
+        icon_sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
+        show_in_equivalent: {type: boolean}
+        is_own: {type: boolean, description: "true — своя валюта леджера; ответы POST/PATCH всегда true"}
+      required: [uuid, name, iso_code, symbol, precision, icon_uuid, icon_sha256, show_in_equivalent, is_own]
+
+    CurrencyFieldError:
+      type: object
+      description: "`400` с именем поля; `field` есть, когда ошибка про конкретное поле"
+      properties:
+        error: {type: string, description: "Текст начинается с имени поля, например \"precision: ожидается целое число от 0 до 8\""}
+        field: {type: string, enum: [name, iso_code, symbol, precision, icon_uuid, show_in_equivalent]}
+      required: [error]
+
+    CurrencyConflict:
+      type: object
+      properties:
+        error: {type: string, enum: [duplicate, currency_in_pair, currency_in_use]}
+        field: {type: string, enum: [iso_code, name], description: "Только при duplicate"}
+      required: [error]
 
     CurrencyPairRateEntry:
       type: object
