@@ -5,7 +5,7 @@ import { check } from 'k6';
 import { pickToken } from './lib/tokens.js';
 import { provisionLedger, pushOneOperation } from './lib/provision.js';
 
-const BASE_URL = __ENV.GATEWAY_URL || 'http://localhost:8090';
+const BASE_URL = __ENV.GATEWAY_URL || 'http://localhost:8091';
 
 export const options = { vus: 1, iterations: 1 };
 

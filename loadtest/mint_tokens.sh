@@ -31,11 +31,11 @@ GA_DIR="$WORKSPACE_DIR/google-auth"
 DATA_DIR="$SCRIPT_DIR/data"
 mkdir -p "$DATA_DIR"
 
-PEM_PATH="$GA_DIR/jwt_signing_key.pem"
-if [[ ! -f "$PEM_PATH" ]]; then
-    echo "Не найден $PEM_PATH — см. wallet-infra/README.md, шаг openssl genrsa." >&2
-    exit 1
-fi
+# Контур test (wallet-infra/infra/env/loadtest_env.sh): ключ подписи — тот же,
+# что у google-auth этого контура, иначе гейтвей отклонит токены.
+# shellcheck source=../../wallet-infra/infra/env/loadtest_env.sh
+source "$WORKSPACE_DIR/wallet-infra/infra/env/loadtest_env.sh"
+PEM_PATH="$LOADTEST_PEM"
 
 # Движок контейнеров — podman (изначальная разработка) или docker (на этой
 # машине podman не установлен вовсе) — берём тот, что реально есть в PATH.
@@ -101,10 +101,10 @@ TTL_SECS="${TTL_SECS:-86400}"
 
 mint_one() {
     # $1=sub $2=email $3=device_id
-    "$ENGINE" run --rm -v "$GA_DIR:/ga" -v "$GA_BUILD_VOL:/ga/build-loadtest" -e TTL_SECS="$TTL_SECS" \
-        -e SUB="$1" -e EMAIL="$2" -e DEV="$3" debian:bookworm-slim bash -c '
+    "$ENGINE" run --rm -v "$GA_DIR:/ga" -v "$GA_BUILD_VOL:/ga/build-loadtest" -v "$PEM_PATH:/key.pem:ro" \
+        -e TTL_SECS="$TTL_SECS" -e SUB="$1" -e EMAIL="$2" -e DEV="$3" debian:bookworm-slim bash -c '
         apt-get update -qq && apt-get install -y --no-install-recommends -qq libssl3 >/dev/null
-        /ga/build-loadtest/mint_loadtest_token --pem /ga/jwt_signing_key.pem \
+        /ga/build-loadtest/mint_loadtest_token --pem /key.pem \
             --sub "$SUB" --email "$EMAIL" --device-id "$DEV" --platform other --ttl-secs "$TTL_SECS"
         ' 2>/dev/null
 }
