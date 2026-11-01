@@ -26,6 +26,10 @@
 # она использует только db.cpp/provisioning.cpp/util/uuid.cpp, уже собираемые
 # для sync_repo.cpp/invites_repo.cpp выше.
 #
+# currencies_repo.cpp (test_currencies.cpp, change currency-ui-tweaks) — тот
+# же принцип: HTTP-слой (currencies.cpp) не нужен; зависимости — db.cpp и
+# util/uuid.cpp, уже собираемые выше.
+#
 # account_deletion_repo.cpp (test_account_deletion.cpp) — тот же принцип:
 # HTTP-слой (account_deletion.cpp — session::current_user) сюда не нужен;
 # сама она использует только db.cpp (голый DELETE/SELECT), никаких новых
@@ -36,7 +40,9 @@ add_executable(wallet_api_integration_tests
     test_invites.cpp
     test_currency_pairs.cpp
     test_account_deletion.cpp
+    test_currencies.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/currencies_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/provisioning.cpp
     ${CMAKE_SOURCE_DIR}/src/sync_repo.cpp
