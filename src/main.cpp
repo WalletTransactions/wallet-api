@@ -24,6 +24,7 @@
 #include "account_deletion.hpp"
 #include "app_state.hpp"
 #include "blob.hpp"
+#include "currencies.hpp"
 #include "currency_pairs.hpp"
 #include "docs.hpp"
 #include "httplib.h"
@@ -220,6 +221,7 @@ int main() {
     blobapi::register_routes(svr, state);
     invitesapi::register_routes(svr, state); // Фаза 6: /api/ledger/*, /api/invites/accept
     currency_pairs_api::register_routes(svr, state); // "Курсы валют": /api/currency-pairs*
+    currencies_api::register_routes(svr, state); // свои валюты: /api/currencies*
     account_deletion_api::register_routes(svr, state); // "Удалить аккаунт": DELETE /api/account
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 

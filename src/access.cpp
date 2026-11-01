@@ -34,7 +34,9 @@ std::string required_scope(const std::string& method, const std::string& path) {
     if (path == "/sync/pull") return "wallet:read";
     if (starts_with(path, "/sync/blobs")) return read ? "wallet:read" : "wallet:write";
     if (starts_with(path, "/api/ledger/") || starts_with(path, "/api/invites/") ||
-        starts_with(path, "/api/currency-pairs")) {
+        starts_with(path, "/api/currency-pairs") ||
+        // Не покрывается префиксом выше: строки расходятся после «currenc».
+        path == "/api/currencies" || starts_with(path, "/api/currencies/")) {
         return read ? "wallet:read" : "wallet:write";
     }
     return {};
