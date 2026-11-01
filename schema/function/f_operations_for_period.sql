@@ -1,10 +1,31 @@
 -- "Список операций" (веб-отчёт, wallet-report/src/reports_repo.cpp
 -- ::operations_for_period) — курсорная пагинация страницами (по умолчанию
--- 1000, см. p_limit ниже), поиск/фильтр по типу/категории/кошельку и
--- группировку по дню сервис делает уже на своей стороне над каждой такой
--- страницей (см. reports_repo.hpp) — тем же приёмом, что дизайн-прототип
--- держит всю ленту в памяти и фильтрует её без похода в сеть, просто теперь
--- "лента" загружается по частям, а не целиком одним запросом.
+-- 1000, см. p_limit ниже) и серверные фильтры (миграция 000027, change
+-- add-operations-filter-functions): категории, кошельки, kind и подстрока
+-- комментария q. Фильтры стоят ДО курсора и LIMIT — фильтр снаружи, после
+-- лимита, сломал бы пагинацию (страница из 3 строк при has_more: true).
+-- Итог по тем же условиям — f_operations_total.sql. Смысл и результаты —
+-- спека wallet-report operations-list.
+--
+-- ФИЛЬТРЫ — трейлинг-параметры с DEFAULT NULL (NULL = фильтр не задан).
+-- Позиционные вызовы с 5 и 7 аргументами (wallet-report до фильтров)
+-- разрешаются в эту же функцию. Новые параметры передаются ИМЕНОВАННОЙ
+-- нотацией и только заданные:
+--   f_operations_for_period($1, $2, $3, $4, $5, p_kind => $6, p_q => $7)
+-- — непереданный получает DEFAULT NULL в базе, SQL NULL клиенту слать не
+-- нужно. Массивы — литералом '{uuid,uuid}' с $n::uuid[]; '{}' — «ни одного»
+-- (пустой результат), а не «фильтр не задан».
+-- - p_category_uuids — неоперационная сторона проводки в списке;
+-- - p_wallet_uuids — операционная сторона в списке: прямой перевод кошелёк →
+--   кошелёк подходит по любому из двух кошельков; uuid категории среди
+--   кошельков (и наоборот) ни с чем не совпадёт;
+-- - p_kind — то же выражение по флагам, что у колонки kind;
+-- - p_q — strpos(lower(translate(comment, 'Ёё', 'Ее')), …) > 0: без учёта
+--   регистра, «ё» = «е» (та же нормализация, что uq_account_name), % и _
+--   ищутся буквально. Индекса под q нет — просмотр ограничен леджером и
+--   периодом по ix_operation_date.
+-- Проверка входных значений (допустимый kind, длина q, число uuid) — дело
+-- wallet-report до вызова; функция просто фильтрует.
 --
 -- ПАГИНАЦИЯ — по прямому запросу (2026-09-12, "давай улучшим операции...
 -- если выбираем 20 лет, то нет необходимости доставать всё"): раньше
@@ -58,16 +79,21 @@
 --
 -- Источник истины — реальные миграции
 -- wallet-api/migrations/000007_operations.up.sql и
--- 000020_operations_pagination.up.sql (см. ../../README.md про этот
--- принцип); этот файл — читаемое зеркало ТЕКУЩЕГО состояния (после обеих).
+-- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql (см.
+-- ../../README.md про этот принцип); этот файл — читаемое зеркало ТЕКУЩЕГО
+-- состояния (после всех трёх).
 CREATE FUNCTION f_operations_for_period(
-    p_ledger_id   uuid,
-    p_from        timestamp,
-    p_to          timestamp,
-    p_eq_currency uuid,
-    p_limit       integer   DEFAULT 1000,
-    p_cursor_date timestamp DEFAULT NULL,
-    p_cursor_uuid uuid      DEFAULT NULL
+    p_ledger_id      uuid,
+    p_from           timestamp,
+    p_to             timestamp,
+    p_eq_currency    uuid,
+    p_limit          integer   DEFAULT 1000,
+    p_cursor_date    timestamp DEFAULT NULL,
+    p_cursor_uuid    uuid      DEFAULT NULL,
+    p_category_uuids uuid[]    DEFAULT NULL,
+    p_wallet_uuids   uuid[]    DEFAULT NULL,
+    p_kind           text      DEFAULT NULL,
+    p_q              text      DEFAULT NULL
 ) RETURNS TABLE (
     operation_uuid uuid,
     "date"         timestamp,
@@ -126,7 +152,22 @@ AS $$
      WHERE o.ledger_id        = p_ledger_id
        AND o.to_currency_uuid = p_eq_currency
        AND o."date" BETWEEN p_from AND p_to
+       AND (p_category_uuids IS NULL
+            OR (NOT o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_category_uuids))
+            OR (NOT o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_category_uuids)))
+       AND (p_wallet_uuids IS NULL
+            OR (o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_wallet_uuids))
+            OR (o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_wallet_uuids)))
+       AND (p_kind IS NULL
+            OR CASE WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
+                    WHEN o.acc_from_is_operating                           THEN 'expense'
+                    ELSE                                                        'income' END = p_kind)
+       AND (p_q IS NULL
+            OR strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(p_q, 'Ёё', 'Ее'))) > 0)
        AND (p_cursor_date IS NULL OR (o."date", o.uuid) < (p_cursor_date, p_cursor_uuid))
      ORDER BY o."date" DESC, o.uuid DESC
      LIMIT p_limit;
 $$;
+
+COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text) IS
+    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, кошельки, kind, подстрока комментария q) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграция 000027.';
