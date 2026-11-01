@@ -68,14 +68,23 @@ set +a
 #     контейнера зависит от имени папки проекта, лейбл — нет; лейбл зависит
 #     от того, какой compose-provider реально исполнял `podman compose`/
 #     `docker compose`). ---
-db_container="$("$ENGINE" ps --filter "label=io.podman.compose.service=db" --format '{{.Names}}' | head -n1)"
-if [[ -z "$db_container" ]]; then
-    db_container="$("$ENGINE" ps --filter "label=com.docker.compose.service=db" --format '{{.Names}}' | head -n1)"
-fi
-if [[ -z "$db_container" ]]; then
-    echo "Не нашёл запущенный контейнер 'db'. Сначала: $ENGINE compose --env-file infra/db/.env up -d db" >&2
+# На хосте два кластера — wallet-prod и wallet-test (wallet-infra/infra/env):
+# без фильтра по проекту `head -n1` мог взять prod и завести тестовую базу и
+# миграции в prod-кластере. Только test; prod — отказ.
+IT_DB_PROJECT="${IT_DB_PROJECT:-wallet-test}"
+if [[ "$IT_DB_PROJECT" == "wallet-prod" ]]; then
+    echo "IT_DB_PROJECT=wallet-prod запрещён: интеграционные тесты — только не в prod-кластере." >&2
     exit 1
 fi
+db_container="$("$ENGINE" ps --filter "label=io.podman.compose.service=db" --filter "label=io.podman.compose.project=$IT_DB_PROJECT" --format '{{.Names}}' | head -n1)"
+if [[ -z "$db_container" ]]; then
+    db_container="$("$ENGINE" ps --filter "label=com.docker.compose.service=db" --filter "label=com.docker.compose.project=$IT_DB_PROJECT" --format '{{.Names}}' | head -n1)"
+fi
+if [[ -z "$db_container" ]]; then
+    echo "Не нашёл запущенный контейнер 'db' проекта '$IT_DB_PROJECT' (IT_DB_PROJECT=...)." >&2
+    exit 1
+fi
+echo "==> Кластер: $db_container (проект $IT_DB_PROJECT)"
 db_network="$("$ENGINE" inspect "$db_container" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
 if [[ -z "$db_network" ]]; then
     echo "Не нашёл сеть контейнера '$db_container'." >&2
