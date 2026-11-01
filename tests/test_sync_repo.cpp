@@ -233,3 +233,93 @@ TEST(create_only_violation_allows_only_new_operations) {
     deleted["deleted"] = "yes"; // не булево — тоже нельзя
     CHECK_EQ(create_only_violation(json{{"operation", json::array({deleted})}}), std::string("delete_not_allowed"));
 }
+
+// --- Необязательные колонки push (change currency-ui-tweaks, design D2) ---
+
+namespace {
+
+bool has(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+nlohmann::json currency_row() {
+    return nlohmann::json{{"uuid", "11111111-1111-1111-1111-111111111111"},
+                          {"name", "Тенге"},
+                          {"iso_code", "KZT"},
+                          {"icon_uuid", "22222222-2222-2222-2222-222222222222"},
+                          {"symbol", "₸"},
+                          {"precision", 2}};
+}
+
+} // namespace
+
+TEST(optional_columns_is_always_a_subset_of_columns) {
+    for (const auto& t : push_tables()) {
+        for (const auto& col : t.optional_columns) {
+            CHECK(std::find(t.columns.begin(), t.columns.end(), col) != t.columns.end());
+        }
+    }
+}
+
+TEST(only_currency_show_in_equivalent_is_optional) {
+    // account.kind и прочие бизнес-колонки остаются обязательными (design D3).
+    for (const auto& t : push_tables()) {
+        if (t.name == "currency") {
+            std::vector<std::string> expected = {"show_in_equivalent"};
+            CHECK(t.optional_columns == expected);
+        } else {
+            CHECK(t.optional_columns.empty());
+        }
+    }
+}
+
+TEST(build_upsert_omits_absent_optional_column_everywhere) {
+    const TableSpec* currency = find(push_tables(), "currency");
+    REQUIRE(currency != nullptr);
+    auto q = sync_repo::build_upsert(*currency, "ledger", "device", 7, currency_row());
+    CHECK(!has(q.insert_sql, "show_in_equivalent"));
+    CHECK(!has(q.update_set, "show_in_equivalent"));
+    CHECK(!has(q.update_by_uuid_set, "show_in_equivalent"));
+    // 5 общих параметров + 5 бизнес-колонок без флага.
+    CHECK_EQ(q.params.size(), static_cast<std::size_t>(10));
+    // Остальные колонки на месте, guard общей строки тоже.
+    CHECK(has(q.update_set, "symbol = EXCLUDED.symbol"));
+    CHECK(has(q.update_set, "WHERE currency.ledger_id = EXCLUDED.ledger_id"));
+}
+
+TEST(build_upsert_includes_present_optional_column) {
+    const TableSpec* currency = find(push_tables(), "currency");
+    REQUIRE(currency != nullptr);
+    auto row = currency_row();
+    row["show_in_equivalent"] = false;
+    auto q = sync_repo::build_upsert(*currency, "ledger", "device", 7, row);
+    CHECK(has(q.insert_sql, ", show_in_equivalent) VALUES"));
+    CHECK(has(q.update_set, "show_in_equivalent = EXCLUDED.show_in_equivalent"));
+    CHECK(has(q.update_by_uuid_set, "show_in_equivalent = $11"));
+    REQUIRE(q.params.size() == static_cast<std::size_t>(11));
+    CHECK_EQ(q.params.back(), std::string("f"));
+}
+
+TEST(build_upsert_rejects_non_boolean_optional_column) {
+    const TableSpec* currency = find(push_tables(), "currency");
+    REQUIRE(currency != nullptr);
+    auto row = currency_row();
+    row["show_in_equivalent"] = "yes";
+    std::string detail;
+    try {
+        sync_repo::build_upsert(*currency, "ledger", "device", 7, row);
+    } catch (const sync_repo::InvalidRow& e) {
+        detail = e.detail;
+    }
+    CHECK(has(detail, "show_in_equivalent"));
+    row["show_in_equivalent"] = nullptr; // null — тоже не boolean
+    CHECK_THROWS(sync_repo::build_upsert(*currency, "ledger", "device", 7, row));
+}
+
+TEST(build_upsert_still_requires_mandatory_columns) {
+    const TableSpec* currency = find(push_tables(), "currency");
+    REQUIRE(currency != nullptr);
+    auto row = currency_row();
+    row.erase("symbol");
+    CHECK_THROWS(sync_repo::build_upsert(*currency, "ledger", "device", 7, row));
+}

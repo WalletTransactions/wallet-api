@@ -23,7 +23,9 @@ add_executable(wallet_api_tests
     test_sync_repo.cpp
     test_access.cpp
     test_sync.cpp
+    test_currencies.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/currencies_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/session.cpp
     ${CMAKE_SOURCE_DIR}/src/sync.cpp
     ${CMAKE_SOURCE_DIR}/src/provisioning.cpp

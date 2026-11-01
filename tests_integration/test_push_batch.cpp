@@ -833,3 +833,160 @@ TEST(push_does_not_overwrite_shared_reference_row_with_same_uuid) {
         ">= (SELECT max(seq) FROM icon WHERE ledger_id IS NULL)");
     CHECK_EQ(stream.rows.at(0).fields.at(0), std::string("t"));
 }
+
+// --- currency.show_in_equivalent (change currency-ui-tweaks, sync-push/sync-pull) ---
+
+namespace {
+
+// Код из свежего uuid — та же причина, что у fixture::make_currency: база не
+// чистится между прогонами, а iso_code уникален в своей области видимости.
+std::string fresh_code() { return "Q" + uuidgen::v4().substr(0, 7); }
+
+std::string show_flag(db::Database& db, const std::string& uuid) {
+    return db.exec("SELECT show_in_equivalent FROM currency WHERE uuid = $1", {uuid}).rows.at(0).fields.at(0);
+}
+
+std::optional<json> pulled_currency(const sync_repo::PullResult& pull, const std::string& uuid) {
+    if (!pull.changes.contains("currency")) return std::nullopt;
+    for (const auto& row : pull.changes.at("currency")) {
+        if (row.at("uuid").get<std::string>() == uuid) return row;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+TEST(push_currency_with_show_in_equivalent_false_is_stored_with_new_seq) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string uuid = uuidgen::v4();
+    json row = make_currency_row(uuid, icon_uuid, fresh_code());
+    row["show_in_equivalent"] = false;
+
+    auto result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      {{"currency", json::array({row})}});
+    REQUIRE(result.http_status == 200);
+    CHECK_EQ(show_flag(*db, uuid), std::string("f"));
+    auto seq = db->exec("SELECT seq FROM currency WHERE uuid = $1", {uuid});
+    CHECK_EQ(std::stoll(seq.rows.at(0).fields.at(0)), json::parse(result.response_body).at("seq").get<int64_t>());
+}
+
+TEST(push_new_currency_without_show_in_equivalent_key_defaults_to_true) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string uuid = uuidgen::v4();
+    // make_currency_row — ровно строка старого клиента, без ключа.
+    auto result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      {{"currency", json::array({make_currency_row(uuid, icon_uuid, fresh_code())})}});
+    CHECK_EQ(result.http_status, 200);
+    CHECK_EQ(show_flag(*db, uuid), std::string("t"));
+}
+
+TEST(push_existing_currency_without_key_keeps_show_in_equivalent) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string uuid = uuidgen::v4();
+    std::string code = fresh_code();
+    json row = make_currency_row(uuid, icon_uuid, code);
+    row["show_in_equivalent"] = false;
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                               {{"currency", json::array({row})}})
+                .http_status == 200);
+
+    // Старый телефон правит название — ключа флага нет.
+    json old_client = make_currency_row(uuid, icon_uuid, code);
+    old_client["name"] = "Renamed " + code;
+    auto result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      {{"currency", json::array({old_client})}});
+    CHECK_EQ(result.http_status, 200);
+    CHECK_EQ(show_flag(*db, uuid), std::string("f"));
+    auto name = db->exec("SELECT name FROM currency WHERE uuid = $1", {uuid});
+    CHECK_EQ(name.rows.at(0).fields.at(0), "Renamed " + code);
+}
+
+TEST(push_show_in_equivalent_on_shared_currency_does_not_change_it) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string shared = fixture::make_currency(*db, "", icon_uuid);
+    auto before = db->exec("SELECT seq, name, show_in_equivalent FROM currency WHERE uuid = $1", {shared});
+
+    json row = make_currency_row(shared, icon_uuid, fresh_code());
+    row["show_in_equivalent"] = false;
+    auto result = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      {{"currency", json::array({row})}});
+    CHECK_EQ(result.http_status, 200);
+    auto after = db->exec("SELECT seq, name, show_in_equivalent FROM currency WHERE uuid = $1", {shared});
+    CHECK(after.rows.at(0).fields == before.rows.at(0).fields);
+    CHECK_EQ(after.rows.at(0).fields.at(2), std::string("t"));
+}
+
+TEST(push_show_in_equivalent_of_wrong_type_is_invalid_row_and_rolls_back) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string good = uuidgen::v4();
+    std::string bad = uuidgen::v4();
+    json bad_row = make_currency_row(bad, icon_uuid, fresh_code());
+    bad_row["show_in_equivalent"] = "yes";
+
+    auto result = push_batch_guarded(
+        db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+        {{"currency", json::array({make_currency_row(good, icon_uuid, fresh_code()), bad_row})}});
+    CHECK_EQ(result.http_status, 400);
+    json body = json::parse(result.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("invalid_row"));
+    CHECK(body.value("detail", std::string{}).find("show_in_equivalent") != std::string::npos);
+    auto count = db->exec("SELECT count(*) FROM currency WHERE uuid IN ($1, $2)", {good, bad});
+    CHECK_EQ(count.rows.at(0).fields.at(0), std::string("0"));
+}
+
+TEST(pull_currency_created_before_flag_carries_true_in_both_streams) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    // fixture::make_currency пишет строку без колонки флага — как валюты до миграции.
+    std::string own = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string shared = fixture::make_currency(*db, "", icon_uuid);
+
+    auto ledger = sync_repo::pull_ledger_stream(*db, identity.ledger_id, 0, 100000);
+    auto own_row = pulled_currency(ledger, own);
+    REQUIRE(own_row.has_value());
+    REQUIRE(own_row->contains("show_in_equivalent"));
+    CHECK(own_row->at("show_in_equivalent") == json(true));
+
+    auto shared_seq = std::stoll(db->exec("SELECT seq FROM currency WHERE uuid = $1", {shared}).rows.at(0).fields.at(0));
+    auto reference = sync_repo::pull_reference_stream(*db, shared_seq - 1, 1000);
+    auto shared_row = pulled_currency(reference, shared);
+    REQUIRE(shared_row.has_value());
+    CHECK(shared_row->at("show_in_equivalent") == json(true));
+}
+
+TEST(pull_after_cursor_returns_flag_cleared_on_other_device) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string uuid = uuidgen::v4();
+    std::string code = fresh_code();
+    auto first = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                     {{"currency", json::array({make_currency_row(uuid, icon_uuid, code)})}});
+    REQUIRE(first.http_status == 200);
+    int64_t cursor = json::parse(first.response_body).at("seq").get<int64_t>();
+
+    // «Другое устройство» того же леджера.
+    std::string other_device = uuidgen::v4();
+    provisioning::ensure_identity(*db, identity.user_id, "integration-test@example.com", other_device,
+                                  "second-device", "other");
+    json row = make_currency_row(uuid, icon_uuid, code);
+    row["show_in_equivalent"] = false;
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, other_device, uuidgen::v4(), {{"currency", json::array({row})}})
+                .http_status == 200);
+
+    auto pull = sync_repo::pull_ledger_stream(*db, identity.ledger_id, cursor, 1000);
+    auto pulled = pulled_currency(pull, uuid);
+    REQUIRE(pulled.has_value());
+    CHECK(pulled->at("show_in_equivalent") == json(false));
+}

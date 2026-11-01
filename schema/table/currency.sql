@@ -24,7 +24,8 @@ CREATE TABLE currency (
     icon_uuid   uuid     NOT NULL REFERENCES icon (uuid)
         ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE,
     symbol      text     NOT NULL,
-    "precision" smallint NOT NULL DEFAULT 2 CHECK ("precision" BETWEEN 0 AND 8)
+    "precision" smallint NOT NULL DEFAULT 2 CHECK ("precision" BETWEEN 0 AND 8),
+    show_in_equivalent boolean NOT NULL DEFAULT true
 );
 
 CREATE INDEX ix_currency_reference_sync ON currency (seq)            WHERE ledger_id IS NULL;
@@ -58,3 +59,5 @@ COMMENT ON COLUMN currency.icon_uuid IS 'Иконка-флаг/символ эт
 COMMENT ON COLUMN currency.symbol IS 'Символ валюты для вывода сумм (например, "$").';
 COMMENT ON COLUMN currency."precision" IS
     'Число знаков после запятой в суммах этой валюты — определяет округление и ограничивает верхнюю границу масштаба operation.amount для этой валюты.';
+COMMENT ON COLUMN currency.show_in_equivalent IS
+    'Показывать ли валюту в выборе валюты эквивалента (отчёты, пикеры). true по умолчанию; в push необязательна — строка без ключа не меняет прежнее значение.';

@@ -81,6 +81,8 @@ add_executable(wallet_api
     src/invites.cpp
     src/currency_pairs_repo.cpp
     src/currency_pairs.cpp
+    src/currencies_repo.cpp
+    src/currencies.cpp
     src/account_deletion_repo.cpp
     src/account_deletion.cpp
     src/docs.cpp

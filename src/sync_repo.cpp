@@ -17,8 +17,11 @@ const std::vector<TableSpec>& push_tables() {
         {"operation", Scope::LedgerOnly,
          {"date", "acc_fr_uuid", "acc_to_uuid", "amount", "comment"}, {"amount"}},
         {"operation_link", Scope::LedgerOnly, {"main_uuid", "link_uuid", "type"}},
+        // show_in_equivalent — необязательная (TableSpec::optional_columns):
+        // телефоны до currency-ui-tweaks её не шлют и не должны получать 400.
         {"currency", Scope::ReferenceOrLedger,
-         {"name", "iso_code", "icon_uuid", "symbol", "precision"}},
+         {"name", "iso_code", "icon_uuid", "symbol", "precision", "show_in_equivalent"},
+         {}, {}, {}, {}, "", {"show_in_equivalent"}},
         {"currency_pair", Scope::ReferenceOrLedger,
          {"symbol", "base_currency_uuid", "quote_currency_uuid", "precision"}},
         // conflict_columns/conflict_where — см. TableSpec, почему именно у
@@ -86,21 +89,19 @@ std::string scalar_to_param(const json& v) {
     return v.dump();
 }
 
+bool contains(const std::vector<std::string>& v, const std::string& s) {
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+} // namespace
+
 // Один INSERT ... ON CONFLICT ... DO UPDATE на строку, колонки и их порядок
 // — из TableSpec. ledger_id всегда АУТЕНТИФИЦИРОВАННЫЙ (параметр функции), а
 // не из тела запроса — клиент не может писать ни чужой леджер, ни (для
 // ReferenceOrLedger-таблиц) общую (ledger_id IS NULL) строку, см.
 // sync_repo.hpp.
-// Строка с таким uuid у леджера уже есть, а режим — только создание
-// (PushMode::CreateOperationsOnly). Ловится в push_batch, транзакция
-// откатывается деструктором.
-struct RowExists {
-    std::string table;
-    std::string uuid;
-};
-
-void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std::string& ledger_id,
-                const std::string& device_id, int64_t seq, const json& row, bool create_only) {
+UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, const std::string& device_id,
+                       int64_t seq, const json& row) {
     std::string row_uuid = row.at("uuid").get<std::string>();
     bool deleted = row.value("deleted", false);
 
@@ -132,10 +133,15 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
 
     int idx = 6;
     for (const auto& col : spec.columns) {
-        bool is_hex = std::find(spec.hex_columns.begin(), spec.hex_columns.end(), col) !=
-                      spec.hex_columns.end();
-        bool is_date_only = std::find(spec.date_only_columns.begin(), spec.date_only_columns.end(),
-                                       col) != spec.date_only_columns.end();
+        // Необязательная колонка без ключа — вне INSERT (DEFAULT таблицы) и
+        // вне обоих SET (прежнее значение), см. TableSpec::optional_columns.
+        if (contains(spec.optional_columns, col)) {
+            auto it = row.find(col);
+            if (it == row.end()) continue;
+            if (!it->is_boolean()) throw InvalidRow{col + ": ожидается boolean"};
+        }
+        bool is_hex = contains(spec.hex_columns, col);
+        bool is_date_only = contains(spec.date_only_columns, col);
         std::string placeholder = "$" + std::to_string(idx++);
         columns_sql += ", " + col;
         // hex_columns — bytea, клиент присылает hex-строку (см. TableSpec::
@@ -148,8 +154,7 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
         // ON CONFLICT, ей и так гарантированно равны NEW/EXCLUDED в момент
         // конфликта; включать её в SET было бы самоприсвоением того же
         // значения (не вредно, но незачем).
-        bool is_conflict_key = std::find(spec.conflict_columns.begin(), spec.conflict_columns.end(),
-                                          col) != spec.conflict_columns.end();
+        bool is_conflict_key = contains(spec.conflict_columns, col);
         if (!is_conflict_key) update_sql += ", " + col + " = EXCLUDED." + col;
         update_by_uuid_sql += ", " + col + " = " + value_expr;
         std::string param = scalar_to_param(row.at(col));
@@ -160,27 +165,6 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
         // currency_pair, дата) только из-за разного времени в хвосте строки.
         if (is_date_only && param.size() > 10) param.resize(10);
         params.push_back(std::move(param));
-    }
-
-    if (!spec.conflict_columns.empty()) {
-        // Естественный ключ арбитрирует ON CONFLICT ниже (см. TableSpec::
-        // conflict_columns) — но конфликтующая строка с ЭТИМ ЖЕ uuid бывает вне
-        // предиката её частичного индекса-арбитра (conflict_where), например уже
-        // мягко удалена: тогда ON CONFLICT её не видит, и голый INSERT падает
-        // прямо на PRIMARY KEY (реальный кейс — Android-клиент "оживляет" мягко
-        // удалённый курс под тем же uuid, см. Android WalletFillData.
-        // InsertCurrencyPairRate, комментарий про 2026-09-11). Поэтому сначала
-        // пробуем обновить НАПРЯМУЮ по uuid — этому не мешает никакой частичный
-        // предикат, виден любой существующий uuid; если строка нашлась, готово,
-        // ON CONFLICT ниже не понадобится.
-        // AND ledger_id = $1 — не даёт чужому леджеру перехватить строку чужим
-        // же push'ем с угаданным/переиспользованным uuid (тот же довод, что для
-        // ledger_id всегда АУТЕНТИФИЦИРОВАННЫЙ в шапке функции): без этого условия
-        // update ушёл бы по любому совпадению uuid, невзирая на владельца строки.
-        auto revived = tx.exec("UPDATE " + spec.name + " SET " + update_by_uuid_sql +
-                                    " WHERE uuid = $2 AND ledger_id = $1 RETURNING uuid",
-                                params);
-        if (!revived.rows.empty()) return;
     }
 
     std::string conflict_target;
@@ -200,14 +184,6 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
     } else {
         conflict_target = spec.scope == Scope::LedgerOnly ? "(ledger_id, uuid)" : "(uuid)";
     }
-    std::string sql = "INSERT INTO " + spec.name + " (" + columns_sql + ") VALUES (" + values_sql +
-                       ") ON CONFLICT " + conflict_target;
-    if (create_only) {
-        // Существующую строку не трогаем вовсе; пустой RETURNING — она была.
-        auto inserted = tx.exec(sql + " DO NOTHING RETURNING uuid", params);
-        if (inserted.rows.empty()) throw RowExists{spec.name, row_uuid};
-        return;
-    }
     // Конфликт по голому uuid (ReferenceOrLedger без conflict_columns) находит
     // строку любого владельца — в том числе общую (ledger_id IS NULL) или чужого
     // леджера. Без условия ниже UPDATE перезаписывал её и ставил seq из потока
@@ -216,10 +192,63 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
     // «впереди головы» и сбрасывал поток (реальный случай 2026-10-10: телефон
     // вернул скачанные общие иконки обратно push'ем). Чужую строку не трогаем
     // вовсе — общие справочники пишет только сервер.
-    std::string guard = spec.scope == Scope::ReferenceOrLedger && spec.conflict_columns.empty()
-                            ? " WHERE " + spec.name + ".ledger_id = EXCLUDED.ledger_id"
-                            : "";
-    auto applied = tx.exec(sql + " DO UPDATE SET " + update_sql + guard + " RETURNING uuid", params);
+    if (spec.scope == Scope::ReferenceOrLedger && spec.conflict_columns.empty()) {
+        update_sql += " WHERE " + spec.name + ".ledger_id = EXCLUDED.ledger_id";
+    }
+
+    UpsertSql out;
+    out.insert_sql = "INSERT INTO " + spec.name + " (" + columns_sql + ") VALUES (" + values_sql +
+                     ") ON CONFLICT " + conflict_target;
+    out.update_set = std::move(update_sql);
+    out.update_by_uuid_set = std::move(update_by_uuid_sql);
+    out.params = std::move(params);
+    return out;
+}
+
+namespace {
+
+// Строка с таким uuid у леджера уже есть, а режим — только создание
+// (PushMode::CreateOperationsOnly). Ловится в push_batch, транзакция
+// откатывается деструктором.
+struct RowExists {
+    std::string table;
+    std::string uuid;
+};
+
+void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std::string& ledger_id,
+                const std::string& device_id, int64_t seq, const json& row, bool create_only) {
+    UpsertSql q = build_upsert(spec, ledger_id, device_id, seq, row);
+    std::string row_uuid = q.params.at(1);
+
+    if (!spec.conflict_columns.empty()) {
+        // Естественный ключ арбитрирует ON CONFLICT ниже (см. TableSpec::
+        // conflict_columns) — но конфликтующая строка с ЭТИМ ЖЕ uuid бывает вне
+        // предиката её частичного индекса-арбитра (conflict_where), например уже
+        // мягко удалена: тогда ON CONFLICT её не видит, и голый INSERT падает
+        // прямо на PRIMARY KEY (реальный кейс — Android-клиент "оживляет" мягко
+        // удалённый курс под тем же uuid, см. Android WalletFillData.
+        // InsertCurrencyPairRate, комментарий про 2026-09-11). Поэтому сначала
+        // пробуем обновить НАПРЯМУЮ по uuid — этому не мешает никакой частичный
+        // предикат, виден любой существующий uuid; если строка нашлась, готово,
+        // ON CONFLICT ниже не понадобится.
+        // AND ledger_id = $1 — не даёт чужому леджеру перехватить строку чужим
+        // же push'ем с угаданным/переиспользованным uuid (тот же довод, что для
+        // ledger_id всегда АУТЕНТИФИЦИРОВАННЫЙ в шапке функции): без этого условия
+        // update ушёл бы по любому совпадению uuid, невзирая на владельца строки.
+        auto revived = tx.exec("UPDATE " + spec.name + " SET " + q.update_by_uuid_set +
+                                    " WHERE uuid = $2 AND ledger_id = $1 RETURNING uuid",
+                                q.params);
+        if (!revived.rows.empty()) return;
+    }
+
+    if (create_only) {
+        // Существующую строку не трогаем вовсе; пустой RETURNING — она была.
+        auto inserted = tx.exec(q.insert_sql + " DO NOTHING RETURNING uuid", q.params);
+        if (inserted.rows.empty()) throw RowExists{spec.name, row_uuid};
+        return;
+    }
+    // update_set уже несёт guard «чужую/общую строку не трогаем» (см. build_upsert).
+    auto applied = tx.exec(q.insert_sql + " DO UPDATE SET " + q.update_set + " RETURNING uuid", q.params);
     if (applied.rows.empty()) {
         applog::warn("push row skipped: uuid belongs to a shared or foreign row",
                      {{"event", "sync_push_foreign_row_skipped"}, {"table", spec.name}, {"uuid", row_uuid}});
@@ -360,6 +389,10 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
         // Только в PushMode::CreateOperationsOnly: правка существующей
         // операции этим токеном запрещена (TODO_telegram_tokens.md, «Скоупы»).
         return PushOutcome{403, json{{"error", "operation_exists"}, {"table", e.table}, {"uuid", e.uuid}}.dump()};
+    } catch (const InvalidRow& e) {
+        // Необязательная колонка не того типа (TableSpec::optional_columns) —
+        // тот же 400 invalid_row, что у json::exception ниже, батч откачен.
+        return PushOutcome{400, json{{"error", "invalid_row"}, {"detail", e.detail}}.dump()};
     } catch (const db::QueryError& e) {
         // Транзакция уже откачена (см. db::Database::Transaction — ROLLBACK
         // в деструкторе, если не дошли до commit()).

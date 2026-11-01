@@ -109,6 +109,11 @@ TEST(access_required_scope_table) {
     CHECK_EQ(authz::required_scope("POST", "/api/invites/accept"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("GET", "/api/currency-pairs"), std::string("wallet:read"));
     CHECK_EQ(authz::required_scope("DELETE", "/api/currency-pairs/x/rates/2026-01-01"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("POST", "/api/currencies"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("PATCH", "/api/currencies/x"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("DELETE", "/api/currencies/x"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("GET", "/api/currencies"), std::string("wallet:read"));
+    CHECK(authz::required_scope("GET", "/api/currenciesx").empty());
     CHECK_EQ(authz::required_scope("DELETE", "/api/account"), std::string("account"));
     CHECK(authz::required_scope("GET", "/healthz").empty());
     CHECK(authz::required_scope("GET", "/docs").empty());
@@ -194,6 +199,16 @@ TEST(access_gate_end_to_end) {
         CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
         CHECK_EQ(res.status, 403);
         CHECK(res.get_header_value("WWW-Authenticate").find("insufficient_scope") != std::string::npos);
+    }
+    // Правка валюты без записи (spec api-access-control) — 403 «нужен scope wallet:write».
+    {
+        json read_only = user_claims();
+        read_only["scope"] = "wallet:read reports:read";
+        httplib::Response res;
+        auto req = request("PATCH", "/api/currencies/11111111-1111-1111-1111-111111111111", token(read_only));
+        CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
+        CHECK_EQ(res.status, 403);
+        CHECK_EQ(json::parse(res.body).value("error", std::string{}), std::string("нужен scope wallet:write"));
     }
     // Без токена и с битым токеном — решает хендлер (401), gate не вмешивается.
     {
