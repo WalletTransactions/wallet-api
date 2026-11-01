@@ -98,7 +98,40 @@ struct TableSpec {
     // uq_currency_pair_rate_ledger). Пусто, если conflict_columns не задан
     // либо целевой индекс не частичный.
     std::string conflict_where;
+    // Подмножество columns, которое строка push вправе НЕ нести (change
+    // currency-ui-tweaks, сегодня только currency.show_in_equivalent). Нет
+    // ключа — колонки нет ни в INSERT (работает DEFAULT таблицы), ни в
+    // DO UPDATE SET, ни в UPDATE по uuid (прежнее значение остаётся): «нет
+    // ключа» значит «клиент о колонке не знает». Ключ есть — значение обязано
+    // быть JSON-boolean (все необязательные колонки сегодня boolean), иначе
+    // invalid_row с именем поля. Обязательные колонки (account.kind и т. п.)
+    // сюда не входят: у них нет безопасного значения по умолчанию, см.
+    // README, «Необязательные колонки push».
+    std::vector<std::string> optional_columns;
 };
+
+// Строка push не годится (сейчас — необязательная колонка не того типа).
+// push_batch отвечает на неё тем же 400 invalid_row, что и на json::exception.
+struct InvalidRow {
+    std::string detail;
+};
+
+// SQL одной строки push — чистая функция ради юнит-тестов (tests/
+// test_sync_repo.cpp), исполняет её upsert_row в sync_repo.cpp.
+// insert_sql — `INSERT … ON CONFLICT <target>` без DO-части (её дописывает
+// upsert_row по режиму), update_set — тело `DO UPDATE SET`,
+// update_by_uuid_set — тело `UPDATE <table> SET` для пути по uuid (только у
+// таблиц с conflict_columns). params — $1…$n для всех трёх текстов.
+// Бросает json::exception (нет обязательного поля) и InvalidRow.
+struct UpsertSql {
+    std::string insert_sql;
+    std::string update_set;
+    std::string update_by_uuid_set;
+    std::vector<std::string> params;
+};
+
+UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, const std::string& device_id,
+                       int64_t seq, const nlohmann::json& row);
 
 // Все таблицы, которые клиент может ОТПРАВИТЬ — включая icon (метаданные;
 // само содержимое — отдельные /sync/blobs, см. шапку файла).
