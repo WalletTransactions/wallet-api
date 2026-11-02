@@ -49,6 +49,19 @@ tags:
       меняются (`404`). Каждое изменение — один новый `seq` потока леджера,
       на телефоны доходит обычным `GET /sync/pull`. Чтение справочника — в
       wallet-report (`GET /api/reports/currencies`).
+  - name: admin-icons
+    description: |
+      Общий набор иконок (`icon.ledger_id IS NULL`) — ведёт администратор с
+      веба (change server-managed-icons), телефон их только скачивает. Только
+      роль `admin` (claim `role` токена, иначе `403 forbidden`) и scope
+      `wallet:write`; `device_id` не нужен, леджер и устройство не
+      провизионируются. Создание двухшаговое: байты картинки — `POST
+      /sync/blobs` (`uploadBlob`), затем `createReferenceIcon` с полученным
+      `sha256`. Картинку существующей иконки не меняем — для новой картинки
+      создаётся новая иконка. Каждое изменение — один новый `seq` потока
+      справочников, на телефоны доходит обычным `GET /sync/pull` (раздел
+      `reference`, `changes.icon`). Чтение набора — wallet-report (`GET
+      /api/reports/admin/icons`).
   - name: account
     description: |
       Самообслуживание — "Удалить аккаунт" (настройки wallet-web). Отдельно
@@ -315,7 +328,8 @@ paths:
         их SHA-256, посчитанный СЕРВЕРОМ (не тем, что мог бы прислать
         клиент). Загрузить содержимое нужно ДО того, как включить строку
         `icon` с этим `content_sha256` в `POST /sync/push` — иначе она
-        получит `409 missing_reference`.
+        получит `409 missing_reference` — или передать его в
+        `createReferenceIcon` (общая иконка, администратор с веба).
 
         Аутентификация — обычная сессионная, БЕЗ требования claim'а
         `device_id` (в отличие от `/sync/push`/`/sync/pull`): blob не
@@ -1133,6 +1147,137 @@ paths:
         "204":
           description: Валюта удалена
 
+  /api/admin/icons:
+    post:
+      operationId: createReferenceIcon
+      summary: Создать общую иконку из загруженного содержимого
+      description: |
+        `content_sha256` — хеш, который вернул `POST /sync/blobs`
+        (`uploadBlob`); без загруженного содержимого — `400` с `field` =
+        `content_sha256`. Края `name` обрезаются, длина — 1–64 символа после
+        обрезки. Сервер выдаёт новый `uuid`. Имя уникально среди живых общих
+        иконок (своя иконка леджера с тем же именем не мешает).
+      tags: [admin-icons]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, minLength: 1, maxLength: 64}
+                icon_type: {type: integer, minimum: 0, maximum: 32767, description: "1 — флаг, остальное — категория (как у телефона)"}
+                content_sha256: {type: string, pattern: "^[0-9a-fA-F]{64}$", description: "sha256 из ответа uploadBlob"}
+              required: [name, icon_type, content_sha256]
+      responses:
+        "400":
+          description: Невалидный JSON, поле не того типа/пустое/вне пределов, или содержимое с таким хешем не загружено
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIconFieldError"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`, проверка роли не выполняется) или `role` ≠ `admin` (`forbidden`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`duplicate`, `field` = `name` — живая общая иконка с таким именем уже есть"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIconConflict"}}
+        "201":
+          description: Иконка создана
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIcon"}}
+
+  /api/admin/icons/{uuid}:
+    patch:
+      operationId: updateReferenceIcon
+      summary: Переименовать общую иконку или сменить её тип
+      description: |
+        Любое непустое подмножество `name`, `icon_type` (те же правила, что
+        у создания). `content_sha256` в теле — `400`: картинка этой ручкой не
+        меняется. Неизвестный, удалённый, не общий (иконка какого-то
+        леджера) или не-uuid — `404`.
+      tags: [admin-icons]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: {type: string, minLength: 1, maxLength: 64}
+                icon_type: {type: integer, minimum: 0, maximum: 32767}
+      responses:
+        "400":
+          description: Невалидный JSON, нет ни `name`, ни `icon_type`, поле не того типа/пустое, прислан `content_sha256`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIconFieldError"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`) или `role` ≠ `admin` (`forbidden`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Нет живой общей иконки с таким uuid
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`duplicate`, `field` = `name`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIconConflict"}}
+        "200":
+          description: Обновлённая иконка (`uuid` и `content_sha256` прежние)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIcon"}}
+    delete:
+      operationId: deleteReferenceIcon
+      summary: Удалить неиспользуемую общую иконку
+      description: |
+        Мягкое удаление: tombstone уходит в поток справочников. Если на
+        иконку ссылается хоть одна живая строка `account` или `currency`
+        любого леджера — `409 in_use` с числом ссылок. Содержимое в `blob`
+        не удаляется.
+      tags: [admin-icons]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `wallet:write` (`insufficient_scope`) или `role` ≠ `admin` (`forbidden`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Нет живой общей иконки с таким uuid (уже удалённая — сюда же)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "`in_use` — иконка используется"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/ReferenceIconConflict"}}
+        "204":
+          description: Иконка удалена
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1585,6 +1730,32 @@ components:
       properties:
         error: {type: string, enum: [duplicate, currency_in_pair, currency_in_use]}
         field: {type: string, enum: [iso_code, name], description: "Только при duplicate"}
+      required: [error]
+
+    ReferenceIcon:
+      type: object
+      description: Общая иконка — те же поля, что строка `icon` раздела `reference` в `GET /sync/pull`.
+      properties:
+        uuid: {type: string, format: uuid}
+        name: {type: string}
+        icon_type: {type: integer, minimum: 0}
+        content_sha256: {type: string, pattern: "^[0-9a-f]{64}$", description: "Байты — GET /sync/blobs/{sha256}"}
+      required: [uuid, name, icon_type, content_sha256]
+
+    ReferenceIconFieldError:
+      type: object
+      description: "`400` с именем поля; `field` есть, когда ошибка про конкретное поле"
+      properties:
+        error: {type: string, description: "Текст, например \"name: не может быть пустым\" или \"содержимое не загружено — сначала POST /sync/blobs\""}
+        field: {type: string, enum: [name, icon_type, content_sha256]}
+      required: [error]
+
+    ReferenceIconConflict:
+      type: object
+      properties:
+        error: {type: string, enum: [duplicate, in_use]}
+        field: {type: string, enum: [name], description: "Только при duplicate"}
+        in_use: {type: integer, minimum: 1, description: "Только при in_use — число живых account/currency со ссылкой на иконку"}
       required: [error]
 
     CurrencyPairRateEntry:

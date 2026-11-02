@@ -114,6 +114,12 @@ TEST(access_required_scope_table) {
     CHECK_EQ(authz::required_scope("DELETE", "/api/currencies/x"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("GET", "/api/currencies"), std::string("wallet:read"));
     CHECK(authz::required_scope("GET", "/api/currenciesx").empty());
+    // Общий набор иконок — wallet:write при любом методе (server-managed-icons).
+    CHECK_EQ(authz::required_scope("POST", "/api/admin/icons"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("GET", "/api/admin/icons"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("PATCH", "/api/admin/icons/x"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("DELETE", "/api/admin/icons/x"), std::string("wallet:write"));
+    CHECK(authz::required_scope("POST", "/api/admin/iconsx").empty());
     CHECK_EQ(authz::required_scope("DELETE", "/api/account"), std::string("account"));
     CHECK(authz::required_scope("GET", "/healthz").empty());
     CHECK(authz::required_scope("GET", "/docs").empty());
@@ -209,6 +215,23 @@ TEST(access_gate_end_to_end) {
         CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
         CHECK_EQ(res.status, 403);
         CHECK_EQ(json::parse(res.body).value("error", std::string{}), std::string("нужен scope wallet:write"));
+    }
+    // Админ без wallet:write на общие иконки — 403 по scope, до проверки роли
+    // (spec api-access-control, server-managed-icons).
+    {
+        json admin_read = user_claims();
+        admin_read["role"] = "admin";
+        admin_read["scope"] = "wallet:read reports:read";
+        httplib::Response res;
+        auto req = request("POST", "/api/admin/icons", token(admin_read));
+        CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
+        CHECK_EQ(res.status, 403);
+        CHECK_EQ(json::parse(res.body).value("error", std::string{}), std::string("нужен scope wallet:write"));
+
+        admin_read["scope"] = "wallet:read wallet:write";
+        httplib::Response ok_res;
+        auto ok_req = request("POST", "/api/admin/icons", token(admin_read));
+        CHECK(authz::gate(ok_req, ok_res, cache) == httplib::Server::HandlerResponse::Unhandled);
     }
     // Без токена и с битым токеном — решает хендлер (401), gate не вмешивается.
     {
