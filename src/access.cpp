@@ -33,6 +33,9 @@ std::string required_scope(const std::string& method, const std::string& path) {
     if (path == "/sync/push") return "wallet:write";                  // или expense:write, см. alternative_scope
     if (path == "/sync/pull") return "wallet:read";
     if (starts_with(path, "/sync/blobs")) return read ? "wallet:read" : "wallet:write";
+    // Общий набор иконок (change server-managed-icons): запись при любом
+    // методе, роль admin проверяет уже хендлер (reference_icons.cpp).
+    if (path == "/api/admin/icons" || starts_with(path, "/api/admin/icons/")) return "wallet:write";
     if (starts_with(path, "/api/ledger/") || starts_with(path, "/api/invites/") ||
         starts_with(path, "/api/currency-pairs") ||
         // Не покрывается префиксом выше: строки расходятся после «currenc».
