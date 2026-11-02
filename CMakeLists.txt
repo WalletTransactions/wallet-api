@@ -85,6 +85,8 @@ add_executable(wallet_api
     src/currencies.cpp
     src/account_deletion_repo.cpp
     src/account_deletion.cpp
+    src/reference_icons_repo.cpp
+    src/reference_icons.cpp
     src/docs.cpp
     ${WALLET_COMMON_DIR}/util/base64.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp

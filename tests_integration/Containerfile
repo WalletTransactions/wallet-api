@@ -28,6 +28,8 @@ COPY src/ src/
 COPY third_party/ third_party/
 COPY scripts/ scripts/
 COPY tests_integration/ tests_integration/
+# Тестовый RSA-ключ/JWT — test_reference_icons.cpp (сквозной HTTP-тест).
+COPY tests/test_rsa_helper.hpp tests/
 
 ARG BUILD_JOBS=3
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DWALLET_API_BUILD_TESTS=OFF \

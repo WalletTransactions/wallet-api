@@ -30,6 +30,7 @@
 #include "httplib.h"
 #include "invites.hpp"
 #include "nlohmann/json.hpp"
+#include "reference_icons.hpp"
 #include "sync.hpp"
 #include "util/dotenv.hpp"
 #include "util/jwks.hpp"
@@ -223,6 +224,7 @@ int main() {
     currency_pairs_api::register_routes(svr, state); // "Курсы валют": /api/currency-pairs*
     currencies_api::register_routes(svr, state); // свои валюты: /api/currencies*
     account_deletion_api::register_routes(svr, state); // "Удалить аккаунт": DELETE /api/account
+    reference_icons_api::register_routes(svr, state); // общий набор иконок (admin): /api/admin/icons*
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
     // Защита от несловленного исключения где угодно в хендлерах (Фаза 2

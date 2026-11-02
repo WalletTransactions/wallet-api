@@ -34,6 +34,13 @@
 # HTTP-слой (account_deletion.cpp — session::current_user) сюда не нужен;
 # сама она использует только db.cpp (голый DELETE/SELECT), никаких новых
 # зависимостей сверх уже собираемых для invites_repo.cpp выше.
+#
+# reference_icons_repo.cpp (test_reference_icons.cpp, change
+# server-managed-icons) — тот же принцип, но здесь впервые и HTTP-слой
+# (reference_icons.cpp) со всем путём токена: session.cpp/access.cpp/
+# util/jwt*.cpp/jwks.cpp/metrics.cpp — один сквозной тест «админ без
+# device_id → 201 без провизионирования» требует настоящей базы. Ключ и JWT —
+# ../tests/test_rsa_helper.hpp (Containerfile копирует только его).
 add_executable(wallet_api_integration_tests
     test_main.cpp
     test_push_batch.cpp
@@ -41,7 +48,16 @@ add_executable(wallet_api_integration_tests
     test_currency_pairs.cpp
     test_account_deletion.cpp
     test_currencies.cpp
+    test_reference_icons.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
+    ${CMAKE_SOURCE_DIR}/src/session.cpp
+    ${CMAKE_SOURCE_DIR}/src/access.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/util/jwks.cpp
+    ${WALLET_COMMON_DIR}/util/metrics.cpp
     ${CMAKE_SOURCE_DIR}/src/currencies_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/provisioning.cpp
