@@ -47,6 +47,23 @@ HTTP-слое). Самое важное: create→accept — одноразов�
 напрямую, а при отклонённом переносе (не-`owner`-вызывающий или
 несуществующий в леджере target) владелец гарантированно НЕ теряет роль.
 
+`test_reference_icons.cpp` (change `server-managed-icons`) —
+`reference_icons_repo.hpp` напрямую: создание общей иконки даёт ровно один
+новый `seq` потока справочников и строку в `pull_reference_stream`
+(`ledger_id`/`updated_by` пусты); хеш без `blob` — `kBlobMissing`, ничего не
+создано; дубль имени общей — `kDuplicate` и при создании, и при
+переименовании (своя иконка леджера с тем же именем не мешает); правка и
+удаление своей иконки леджера — `kNotFound`, строка не тронута; живые
+`account`/`currency` со ссылкой — `kInUse` с числом ссылок (удалённый счёт
+не считается); удаление неиспользуемой — tombstone в pull, `blob` остаётся,
+имя снова свободно. Плюс единственный в этом каталоге сквозной HTTP-тест
+(`reference_icons_http_admin_browser_session_without_device`): настоящий
+гейт `access.cpp` + хендлеры `reference_icons.cpp` + JWT с фейкового JWKS
+(`../tests/test_rsa_helper.hpp`) — `role=user` — `403 forbidden`, админ без
+`wallet:write` — `403` гейта, админ без `device_id` — `201`, под его `sub`
+не заведено ни устройства, ни членства в леджере; затем коды `409`/`400`/
+`200`/`404`/`409 in_use`/`204` по HTTP.
+
 ## Изоляция
 
 Каждый `TEST` заводит СВОИ `user_id`/`device_id`/`ledger_id` (случайные uuid,
