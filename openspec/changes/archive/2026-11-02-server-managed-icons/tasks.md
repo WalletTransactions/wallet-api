@@ -25,5 +25,5 @@
   Проверено: YAML разбирается, все `$ref` на месте; собранный `wallet_api` на `wallet_api_it` отдаёт `/docs` `200`, в `/openapi.yaml` — тег и три operationId. Отрисовку Swagger UI в браузере не смотрел.
 - [x] 4.2 `README.md`: раздел про управление общими иконками (двухшаговое создание через `/sync/blobs`, admin-only, удаление только неиспользуемой)
   Сделано: раздел «Общие иконки (`/api/admin/icons*`, только администратор)» и строка в «Что реализовано»; таблицы покрытия в `tests/README.md` и `tests_integration/README.md`.
-- [ ] 4.3 Живая проверка через гейтвей (`docker compose --env-file infra/db/.env`, wallet-api собирать отдельно): `curl` под админом — загрузить blob, создать иконку, увидеть её в `GET /api/reports/admin/icons` и в `GET /sync/pull` устройства
+- [x] 4.3 Живая проверка через гейтвей (`docker compose --env-file infra/db/.env`, wallet-api собирать отдельно): `curl` под админом — загрузить blob, создать иконку, увидеть её в `GET /api/reports/admin/icons` и в `GET /sync/pull` устройства — Тест: [wallet-api#5](https://github.com/WalletTransactions/wallet-api/issues/5) — проверено 2026-11-02 по CDP (cookie сессии admin)
   Не сделано: нужен выкат образа в контур с гейтвеем (wallet-test или wallet-prod), а в этом заходе контуры трогать нельзя. Остаётся после мержа и выката.
