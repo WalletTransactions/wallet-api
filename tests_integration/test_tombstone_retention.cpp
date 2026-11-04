@@ -137,12 +137,16 @@ TEST(device_follows_user_to_invited_ledger_and_back_to_new_personal) {
 
     // Подтвердил поток леджера владельца, затем удалён из участников —
     // устройство переписывается на новый личный леджер, подтверждение пусто.
-    sync_repo::record_ack(*db, guest.device_id, 3, 0);
+    // Отметка начала загрузки с нуля относится к потоку того же леджера и
+    // при смене тоже обнуляется; справочников — остаётся.
+    sync_repo::record_ack(*db, guest.device_id, 3, 0, /*ledger_load_base=*/4, /*reference_load_base=*/2);
     REQUIRE(invites_repo::remove_member(*db, owner.ledger_id, guest.user_id));
     auto personal = provisioning::ensure_identity(*db, guest.user_id, email, guest.device_id, "", "other");
     CHECK(personal.ledger_id != owner.ledger_id);
     CHECK_EQ(device_field(*db, guest.device_id, "ledger_id"), personal.ledger_id);
     CHECK_EQ(device_field(*db, guest.device_id, "last_ack_seq"), std::string(""));
+    CHECK_EQ(device_field(*db, guest.device_id, "ledger_load_base_seq"), std::string(""));
+    CHECK_EQ(device_field(*db, guest.device_id, "reference_load_base_seq"), std::string("2"));
 }
 
 // --- Горизонт ---------------------------------------------------------------
@@ -362,8 +366,9 @@ TEST(sync_pull_http_acks_purges_throttles_and_survives_purge_failure) {
     httplib::Headers auth{{"Authorization", "Bearer " + make_test_jwt(key, kKid, claims)}};
     // reference_seq всегда 0 — горизонт общего потока справочников тестовой
     // базы не сдвигается (см. шапку файла).
-    auto pull = [&](int64_t ledger_seq, const std::string& ledger_id_param = "") {
-        std::string path = "/sync/pull?reference_seq=0&limit=1000&ledger_seq=" + std::to_string(ledger_seq);
+    auto pull = [&](int64_t ledger_seq, const std::string& ledger_id_param = "", int limit = 1000) {
+        std::string path = "/sync/pull?reference_seq=0&limit=" + std::to_string(limit) +
+                           "&ledger_seq=" + std::to_string(ledger_seq);
         if (!ledger_id_param.empty()) path += "&ledger_id=" + ledger_id_param;
         auto res = client.Get(path, auth);
         if (!res) throw std::runtime_error("no response");
@@ -435,4 +440,31 @@ TEST(sync_pull_http_acks_purges_throttles_and_survives_purge_failure) {
     CHECK(ok);
     CHECK(row_exists(*db, "operation", op2));
     CHECK_EQ(purged_seq(*db, ledger_id), del1); // транзакция чистки откатилась целиком
+
+    // Загрузка с нуля в несколько страниц после чистки (ручная проверка на
+    // test 2026-11-04: граница первой страницы ниже purged_seq — раньше
+    // "purged" и снова 0, бесконечно). limit=1: первая страница — группа
+    // created (a, b), её next_seq = created < purged_seq = del1.
+    REQUIRE(created < del1);
+    json page = pull(0, ledger_id, 1);
+    CHECK_EQ(device_field(*db, device_id, "ledger_load_base_seq"), std::to_string(del1));
+    int64_t cursor = page.at("ledger").at("next_seq").get<int64_t>();
+    CHECK_EQ(cursor, created);
+    int pages = 1;
+    while (true) {
+        json next = pull(cursor, ledger_id, 1);
+        CHECK(!next.at("ledger").at("reset").get<bool>());
+        int64_t n = next.at("ledger").at("next_seq").get<int64_t>();
+        if (n == cursor || next.at("ledger").at("reset").get<bool>() || ++pages > 50) break;
+        cursor = n;
+    }
+    CHECK_EQ(cursor, del2); // догнали голову
+
+    // purged_seq вырос после начала загрузки (устройство выпадало) — курсор
+    // ниже него снова отставший.
+    db->exec("UPDATE change_stream SET purged_seq = $2 WHERE id = $1", {ledger_id, std::to_string(del2)});
+    json stale = pull(created, ledger_id, 1);
+    CHECK(stale.at("ledger").at("reset").get<bool>());
+    CHECK_EQ(stale.at("ledger").at("reset_reason").get<std::string>(), std::string("purged"));
+    CHECK_EQ(device_field(*db, device_id, "ledger_load_base_seq"), std::to_string(del2));
 }

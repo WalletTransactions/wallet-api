@@ -164,8 +164,19 @@ void handle_pull(AppState& state, const httplib::Request& req, httplib::Response
     // limit, если не разрезать группу с одинаковым seq, но не меньше).
     int limit = static_cast<int>(param_or(req, "limit", 500));
 
-    auto ledger_result = sync_repo::pull_ledger_stream(*state.db_pool->acquire(), ctx->ledger_id, ledger_cursor, limit);
-    auto reference_result = sync_repo::pull_reference_stream(*state.db_pool->acquire(), reference_cursor, limit);
+    // Курсор от чужого леджера (ledger_id запроса не совпал) — не продолжение
+    // загрузки этого потока, отметка начала загрузки к нему не относится.
+    bool foreign_ledger =
+        req.has_param("ledger_id") && !same_uuid(req.get_param_value("ledger_id"), ctx->ledger_id);
+    // Отметки начала загрузки с нуля (миграция 000029): курсор ниже
+    // purged_seq у устройства, которое грузится с нуля, — граница страницы,
+    // а не отставание. Без них загрузка в несколько страниц после чистки
+    // зацикливалась (ручная проверка на test 2026-11-04).
+    auto bases = sync_repo::device_load_bases(*state.db_pool->acquire(), ctx->device_id);
+    auto ledger_result = sync_repo::pull_ledger_stream(*state.db_pool->acquire(), ctx->ledger_id, ledger_cursor, limit,
+                                                       foreign_ledger ? std::nullopt : bases.ledger);
+    auto reference_result =
+        sync_repo::pull_reference_stream(*state.db_pool->acquire(), reference_cursor, limit, bases.reference);
 
     // Подтверждение (change purge-synced-tombstones): курсор запроса — всё
     // до него устройство уже применило. При сбросе устройство начинает
@@ -174,11 +185,15 @@ void handle_pull(AppState& state, const httplib::Request& req, httplib::Response
     // совпал с текущим леджером — курсор от чужого потока, подтверждение
     // леджера не пишется; без ledger_id (старые клиенты) — пишется.
     std::optional<int64_t> ledger_ack = ledger_result.reset ? 0 : ledger_cursor;
-    if (req.has_param("ledger_id") && !same_uuid(req.get_param_value("ledger_id"), ctx->ledger_id)) {
-        ledger_ack = std::nullopt;
-    }
+    if (foreign_ledger) ledger_ack = std::nullopt;
     int64_t reference_ack = reference_result.reset ? 0 : reference_cursor;
-    sync_repo::record_ack(*state.db_pool->acquire(), ctx->device_id, ledger_ack, reference_ack);
+    // Поток начат с нуля (курсор 0 или сброс) — запоминаем, до какого seq он
+    // был вычищен в этот момент.
+    std::optional<int64_t> ledger_base, reference_base;
+    if (ledger_ack && *ledger_ack == 0) ledger_base = ledger_result.purged_seq;
+    if (reference_ack == 0) reference_base = reference_result.purged_seq;
+    sync_repo::record_ack(*state.db_pool->acquire(), ctx->device_id, ledger_ack, reference_ack, ledger_base,
+                          reference_base);
 
     // ledger_id — чтобы клиент заметил смену леджера (другой пользователь
     // при том же email, переход по инвайту) и сбросил курсор сам, не

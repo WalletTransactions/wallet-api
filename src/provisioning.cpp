@@ -84,7 +84,9 @@ Identity ensure_identity(db::Database& db, const std::string& user_id, const std
         "  name = CASE WHEN EXCLUDED.name = '' THEN device.name ELSE EXCLUDED.name END, "
         "  ledger_id = EXCLUDED.ledger_id, "
         "  last_ack_seq = CASE WHEN device.ledger_id = EXCLUDED.ledger_id "
-        "                      THEN device.last_ack_seq ELSE NULL END",
+        "                      THEN device.last_ack_seq ELSE NULL END, "
+        "  ledger_load_base_seq = CASE WHEN device.ledger_id = EXCLUDED.ledger_id "
+        "                              THEN device.ledger_load_base_seq ELSE NULL END",
         {device_id, user_id, identity.ledger_id, platform, device_name});
 
     return identity;

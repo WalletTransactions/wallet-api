@@ -556,10 +556,14 @@ StreamState stream_state(db::Database& db, const std::string& stream_id) {
 // и purged_seq только растут, так что гонка с параллельным push/чисткой
 // ложного "ahead" не даст, а "purged" по уже вычищенному — и есть верный
 // ответ. Курсор переводится на 0, страница читается с начала.
-ResetReason rewind_if_needed(db::Database& db, const std::string& stream_id, int64_t& cursor) {
-    if (cursor <= 0) return ResetReason::None;
+// purged_seq потока возвращается через out-параметр — им sync.cpp отмечает
+// начало загрузки с нуля (device.*_load_base_seq).
+ResetReason rewind_if_needed(db::Database& db, const std::string& stream_id, int64_t& cursor,
+                             std::optional<int64_t> load_base, int64_t& purged_seq) {
     auto state = stream_state(db, stream_id);
-    auto reason = reset_reason_for(cursor, state.head, state.purged_seq);
+    purged_seq = state.purged_seq;
+    if (cursor <= 0) return ResetReason::None;
+    auto reason = reset_reason_for(cursor, state.head, state.purged_seq, load_base);
     if (reason == ResetReason::Ahead) {
         applog::warn("pull cursor ahead of stream head — rewinding to 0",
                      {{"event", "sync_pull_cursor_reset"}, {"stream_id", stream_id}, {"cursor", cursor}});
@@ -592,10 +596,10 @@ std::string join_and(const std::vector<std::string>& parts) {
 
 const char* const kReferenceStreamId = "00000000-0000-0000-0000-000000000001";
 
-ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq) {
+ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq, std::optional<int64_t> load_base) {
     if (cursor <= 0) return ResetReason::None;
     if (cursor > head) return ResetReason::Ahead;
-    if (cursor < purged_seq) return ResetReason::Purged;
+    if (cursor < purged_seq && !(load_base && purged_seq <= *load_base)) return ResetReason::Purged;
     return ResetReason::None;
 }
 
@@ -609,8 +613,9 @@ const char* reset_reason_name(ResetReason reason) {
 }
 
 PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor,
-                               int limit) {
-    auto reason = rewind_if_needed(db, ledger_id, cursor);
+                               int limit, std::optional<int64_t> load_base) {
+    int64_t purged = 0;
+    auto reason = rewind_if_needed(db, ledger_id, cursor, load_base, purged);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/true);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $2) AS max_seq FROM "
@@ -619,11 +624,13 @@ PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, in
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
     auto result = run_pull(db, sql, {ledger_id, std::to_string(cursor), std::to_string(limit)}, cursor);
     apply_reset(result, reason);
+    result.purged_seq = purged;
     return result;
 }
 
-PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit) {
-    auto reason = rewind_if_needed(db, kReferenceStreamId, cursor);
+PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit, std::optional<int64_t> load_base) {
+    int64_t purged = 0;
+    auto reason = rewind_if_needed(db, kReferenceStreamId, cursor, load_base, purged);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/false);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $1) AS max_seq FROM "
@@ -632,21 +639,39 @@ PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit) {
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
     auto result = run_pull(db, sql, {std::to_string(cursor), std::to_string(limit)}, cursor);
     apply_reset(result, reason);
+    result.purged_seq = purged;
     return result;
 }
 
 // --- Срок хранения tombstone ----------------------------------------------
 
 void record_ack(db::Database& db, const std::string& device_id, std::optional<int64_t> ledger_cursor,
-                int64_t reference_cursor) {
-    // '' -> NULL -> COALESCE оставляет прежнее подтверждение леджера: курсор
-    // от чужого леджера подтверждением не считается (см. sync.cpp).
+                int64_t reference_cursor, std::optional<int64_t> ledger_load_base,
+                std::optional<int64_t> reference_load_base) {
+    // '' -> NULL -> COALESCE оставляет прежнее значение: курсор от чужого
+    // леджера подтверждением не считается (см. sync.cpp), отметка начала
+    // загрузки пишется только при старте с нуля.
+    auto opt = [](std::optional<int64_t> v) { return v ? std::to_string(*v) : std::string{}; };
     db.exec("UPDATE device SET "
             "  last_ack_seq = COALESCE(NULLIF($2, '')::bigint, last_ack_seq), "
-            "  last_ack_reference_seq = $3::bigint "
+            "  last_ack_reference_seq = $3::bigint, "
+            "  ledger_load_base_seq = COALESCE(NULLIF($4, '')::bigint, ledger_load_base_seq), "
+            "  reference_load_base_seq = COALESCE(NULLIF($5, '')::bigint, reference_load_base_seq) "
             "WHERE id = $1",
-            {device_id, ledger_cursor ? std::to_string(*ledger_cursor) : std::string{},
-             std::to_string(reference_cursor)});
+            {device_id, opt(ledger_cursor), std::to_string(reference_cursor), opt(ledger_load_base),
+             opt(reference_load_base)});
+}
+
+LoadBases device_load_bases(db::Database& db, const std::string& device_id) {
+    auto res = db.exec("SELECT COALESCE(ledger_load_base_seq::text, ''), COALESCE(reference_load_base_seq::text, '') "
+                       "FROM device WHERE id = $1",
+                       {device_id});
+    LoadBases out;
+    if (res.rows.empty()) return out;
+    const auto& f = res.rows.at(0).fields;
+    if (!f.at(0).empty()) out.ledger = std::stoll(f.at(0));
+    if (!f.at(1).empty()) out.reference = std::stoll(f.at(1));
+    return out;
 }
 
 int64_t stream_horizon(db::Database& db, const std::string& stream_id, int device_ttl_days) {
