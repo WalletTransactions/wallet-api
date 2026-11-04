@@ -41,6 +41,10 @@
 # util/jwt*.cpp/jwks.cpp/metrics.cpp — один сквозной тест «админ без
 # device_id → 201 без провизионирования» требует настоящей базы. Ключ и JWT —
 # ../tests/test_rsa_helper.hpp (Containerfile копирует только его).
+#
+# sync.cpp (test_tombstone_retention.cpp, change purge-synced-tombstones) —
+# HTTP-слой GET /sync/pull тем же путём токена: подтверждение по ledger_id
+# запроса, выключатель и падение чистки живут именно в handle_pull.
 add_executable(wallet_api_integration_tests
     test_main.cpp
     test_push_batch.cpp
@@ -49,6 +53,7 @@ add_executable(wallet_api_integration_tests
     test_account_deletion.cpp
     test_currencies.cpp
     test_reference_icons.cpp
+    test_tombstone_retention.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
@@ -62,6 +67,7 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/provisioning.cpp
     ${CMAKE_SOURCE_DIR}/src/sync_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync.cpp
     ${CMAKE_SOURCE_DIR}/src/invites_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_pairs_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/account_deletion_repo.cpp

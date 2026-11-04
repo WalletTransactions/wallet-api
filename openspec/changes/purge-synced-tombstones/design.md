@@ -114,7 +114,7 @@ Android первый запрос шлёт курсор старого ледж�
 
 ## Migration Plan
 
-1. Миграция 000026: `device.last_ack_reference_seq bigint`,
+1. Миграция 000028 (000026/000027 заняты): `device.last_ack_reference_seq bigint`,
    `change_stream.purged_seq bigint NOT NULL DEFAULT 0`,
    `change_stream.purged_at timestamptz`; новый комментарий к
    `device.last_ack_seq`. Down — удалить колонки, вернуть комментарий.

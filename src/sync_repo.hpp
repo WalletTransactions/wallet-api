@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -208,14 +209,96 @@ struct PullResult {
     // нужно заменить курсор на next_seq как обычно (применение — upsert по
     // uuid, повтор безопасен). Без этого pull молча возвращал бы пустоту
     // навсегда — реальный случай 2026-09-30: курсор 146 при голове 13.
+    //
+    // Второй повод сброса (change purge-synced-tombstones) — курсор отстал
+    // от чистки: 0 < cursor < change_stream.purged_seq, часть удалений,
+    // которых клиент ещё не видел, физически вычищена. Причина — в
+    // reset_reason.
     bool reset = false;
+    // "ahead" | "purged" при reset, пусто без сброса (в ответ поле тогда не
+    // попадает, см. sync.cpp).
+    std::string reset_reason;
 };
+
+// Причина сброса курсора — чистая функция ради юнит-тестов. head — голова
+// потока, purged_seq — до какого seq он вычищен. Курсор 0 — не отставание:
+// клиент и так читает с нуля. Впереди головы — "ahead" (проверяется первым:
+// такой курсор вообще не от этого потока).
+enum class ResetReason { None, Ahead, Purged };
+ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq);
+const char* reset_reason_name(ResetReason reason); // "" | "ahead" | "purged"
 
 // Курсор — bigint клиента, лимит — сколько строк добирать (страница может
 // оказаться БОЛЬШЕ limit — см. README wallet-api/schema, "Курсор и страницы":
-// группа с одинаковым seq никогда не разрезается). Курсор больше головы
-// потока — см. PullResult::reset.
+// группа с одинаковым seq никогда не разрезается). Сброс курсора — см.
+// PullResult::reset.
 PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor, int limit);
 PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit);
+
+// --- Срок хранения tombstone (change purge-synced-tombstones) ---------------
+
+// Константный id потока справочников — см. schema/table/change_stream.sql.
+extern const char* const kReferenceStreamId;
+
+// Подтверждение устройства: курсоры запроса pull — всё до них устройство
+// применило и сохранило (Android сохраняет курсор только после применения
+// страницы). Пишется как есть, в том числе меньше прежнего. ledger_cursor =
+// nullopt — подтверждение леджера не трогается (ledger_id запроса не совпал
+// с текущим леджером, см. sync.cpp).
+void record_ack(db::Database& db, const std::string& device_id, std::optional<int64_t> ledger_cursor,
+                int64_t reference_cursor);
+
+// Горизонт чистки потока: минимум подтверждений устройств, у которых
+// подтверждение есть и last_seen_at не старше device_ttl_days. Поток
+// леджера — устройства этого леджера (stream_id = ledger_id), поток
+// справочников (kReferenceStreamId) — все устройства. Нет таких устройств —
+// голова потока. Никогда не больше головы.
+int64_t stream_horizon(db::Database& db, const std::string& stream_id, int device_ttl_days);
+
+// Ссылка одной таблицы синка на другую: child.child_columns ->
+// parent.parent_columns. Только ссылки МЕЖДУ таблицами синка (ledger/device/
+// blob сюда не входят — их строки чистка не удаляет). Тип ссылки (CASCADE
+// или NO ACTION) неважен: tombstone, на который ссылается хоть одна строка
+// (живая или удалённая), не удаляется вовсе.
+struct TableRef {
+    std::string child;
+    std::vector<std::string> child_columns;
+    std::string parent;
+    std::vector<std::string> parent_columns;
+};
+const std::vector<TableRef>& sync_table_refs();
+
+// Порядок удаления — от листьев к корням: таблица идёт раньше всех, на
+// которые ссылается, так что в одной транзакции удалённый лист освобождает
+// свой удалённый корень. Совпадает по составу с pull_tables() (юнит-тест).
+const std::vector<std::string>& purge_order();
+
+// Тексты DELETE для чистки одного потока, по purge_order() — чистая функция
+// ради юнит-тестов. Параметры: поток леджера — $1 ledger_id, $2 горизонт;
+// поток справочников — $1 горизонт (только строки ledger_id IS NULL, только
+// таблицы Scope::ReferenceOrLedger).
+struct PurgeStatement {
+    std::string table;
+    std::string sql;
+};
+std::vector<PurgeStatement> build_purge_statements(bool ledger_stream);
+
+struct PurgeStats {
+    int64_t horizon = 0;
+    int64_t purged_seq = 0;      // change_stream.purged_seq после чистки
+    int64_t deleted_rows = 0;    // всего по всем таблицам
+};
+
+// Удаляет tombstone потока с seq <= horizon, на которые никто не ссылается,
+// и поднимает purged_seq до max(purged_seq, horizon) — одной транзакцией.
+// Без троттлинга — его делает maybe_purge_stream.
+PurgeStats purge_stream(db::Database& db, const std::string& stream_id, int64_t horizon);
+
+// Чистка после pull: атомарно занимает слот (purged_at старше часа или
+// NULL), считает горизонт и чистит. nullopt — слот занят (чистка была
+// меньше часа назад или идёт параллельно). Ошибки — исключением, вызывающий
+// пишет их в лог и ответ pull не меняет.
+std::optional<PurgeStats> maybe_purge_stream(db::Database& db, const std::string& stream_id,
+                                             int device_ttl_days);
 
 } // namespace sync_repo

@@ -323,3 +323,123 @@ TEST(build_upsert_still_requires_mandatory_columns) {
     row.erase("symbol");
     CHECK_THROWS(sync_repo::build_upsert(*currency, "ledger", "device", 7, row));
 }
+
+// --- Срок хранения tombstone (change purge-synced-tombstones) ---------------
+
+TEST(reset_reason_none_for_zero_cursor_even_if_purged) {
+    // Курсор 0 — не отставание: клиент и так читает с нуля.
+    CHECK(sync_repo::reset_reason_for(0, 100, 500) == sync_repo::ResetReason::None);
+}
+
+TEST(reset_reason_ahead_when_cursor_beyond_head) {
+    CHECK(sync_repo::reset_reason_for(146, 13, 0) == sync_repo::ResetReason::Ahead);
+    // "ahead" проверяется первым: курсор не от этого потока вообще.
+    CHECK(sync_repo::reset_reason_for(600, 550, 500) == sync_repo::ResetReason::Ahead);
+}
+
+TEST(reset_reason_purged_when_cursor_behind_purged_seq) {
+    CHECK(sync_repo::reset_reason_for(40, 600, 500) == sync_repo::ResetReason::Purged);
+    CHECK(sync_repo::reset_reason_for(499, 600, 500) == sync_repo::ResetReason::Purged);
+}
+
+TEST(reset_reason_none_when_cursor_equals_purged_seq_or_head) {
+    CHECK(sync_repo::reset_reason_for(500, 600, 500) == sync_repo::ResetReason::None);
+    CHECK(sync_repo::reset_reason_for(600, 600, 500) == sync_repo::ResetReason::None);
+    CHECK(sync_repo::reset_reason_for(10, 600, 0) == sync_repo::ResetReason::None);
+}
+
+TEST(reset_reason_names) {
+    CHECK_EQ(std::string(sync_repo::reset_reason_name(sync_repo::ResetReason::None)), std::string(""));
+    CHECK_EQ(std::string(sync_repo::reset_reason_name(sync_repo::ResetReason::Ahead)), std::string("ahead"));
+    CHECK_EQ(std::string(sync_repo::reset_reason_name(sync_repo::ResetReason::Purged)), std::string("purged"));
+}
+
+TEST(purge_order_matches_pull_tables) {
+    // Новая таблица синка без места в порядке чистки — её tombstone копились
+    // бы вечно, а её ссылки не держали бы родителей.
+    std::set<std::string> order(sync_repo::purge_order().begin(), sync_repo::purge_order().end());
+    std::set<std::string> pulled;
+    for (const auto& t : pull_tables()) pulled.insert(t.name);
+    CHECK(order == pulled);
+    CHECK_EQ(order.size(), sync_repo::purge_order().size());
+}
+
+TEST(table_refs_point_between_sync_tables_and_columns_exist) {
+    for (const auto& ref : sync_repo::sync_table_refs()) {
+        const TableSpec* child = find(pull_tables(), ref.child);
+        const TableSpec* parent = find(pull_tables(), ref.parent);
+        REQUIRE(child != nullptr);
+        REQUIRE(parent != nullptr);
+        REQUIRE(ref.child_columns.size() == ref.parent_columns.size());
+        for (const auto& col : ref.child_columns) {
+            bool common = col == "uuid" || col == "ledger_id";
+            bool business = std::find(child->columns.begin(), child->columns.end(), col) != child->columns.end();
+            CHECK(common || business);
+        }
+        for (const auto& col : ref.parent_columns) CHECK(col == "uuid" || col == "ledger_id");
+    }
+}
+
+TEST(purge_order_deletes_children_before_parents) {
+    const auto& order = sync_repo::purge_order();
+    auto pos = [&](const std::string& name) {
+        return std::find(order.begin(), order.end(), name) - order.begin();
+    };
+    for (const auto& ref : sync_repo::sync_table_refs()) {
+        CHECK(pos(ref.child) < pos(ref.parent));
+    }
+}
+
+TEST(every_uuid_column_of_sync_tables_has_a_ref) {
+    // Бизнес-колонка *_uuid — ссылка на другую таблицу синка; забытая в
+    // sync_table_refs() ссылка уронила бы DELETE на FK или унесла бы
+    // каскадом живые строки.
+    for (const auto& t : pull_tables()) {
+        for (const auto& col : t.columns) {
+            if (col.size() < 5 || col.substr(col.size() - 5) != "_uuid") continue;
+            bool found = false;
+            for (const auto& ref : sync_repo::sync_table_refs()) {
+                if (ref.child != t.name) continue;
+                if (std::find(ref.child_columns.begin(), ref.child_columns.end(), col) != ref.child_columns.end()) {
+                    found = true;
+                }
+            }
+            CHECK(found);
+        }
+    }
+}
+
+TEST(purge_statements_ledger_stream_cover_all_tables) {
+    auto stmts = sync_repo::build_purge_statements(/*ledger_stream=*/true);
+    CHECK_EQ(stmts.size(), sync_repo::purge_order().size());
+    for (const auto& st : stmts) {
+        CHECK(st.sql.find("p.ledger_id = $1") != std::string::npos);
+        CHECK(st.sql.find("p.seq <= $2") != std::string::npos);
+        CHECK(st.sql.find("p.deleted_at IS NOT NULL") != std::string::npos);
+    }
+}
+
+TEST(purge_statements_account_checks_operations_and_operating) {
+    auto stmts = sync_repo::build_purge_statements(/*ledger_stream=*/true);
+    auto it = std::find_if(stmts.begin(), stmts.end(), [](const auto& s) { return s.table == "account"; });
+    REQUIRE(it != stmts.end());
+    CHECK(it->sql.find("c.acc_fr_uuid = p.uuid") != std::string::npos);
+    CHECK(it->sql.find("c.acc_to_uuid = p.uuid") != std::string::npos);
+    CHECK(it->sql.find("FROM account_operating c") != std::string::npos);
+}
+
+TEST(purge_statements_reference_stream_only_shared_tables) {
+    auto stmts = sync_repo::build_purge_statements(/*ledger_stream=*/false);
+    for (const auto& st : stmts) {
+        const TableSpec* spec = find(pull_tables(), st.table);
+        REQUIRE(spec != nullptr);
+        CHECK(spec->scope == Scope::ReferenceOrLedger);
+        CHECK(st.sql.find("p.ledger_id IS NULL") != std::string::npos);
+        CHECK(st.sql.find("p.seq <= $1") != std::string::npos);
+    }
+    // icon держат и счета (ledger-only таблица): ссылки не фильтруются по
+    // потоку.
+    auto icon = std::find_if(stmts.begin(), stmts.end(), [](const auto& s) { return s.table == "icon"; });
+    REQUIRE(icon != stmts.end());
+    CHECK(icon->sql.find("FROM account c") != std::string::npos);
+}

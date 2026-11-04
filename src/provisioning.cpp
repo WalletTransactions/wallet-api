@@ -67,12 +67,24 @@ Identity ensure_identity(db::Database& db, const std::string& user_id, const std
     // которое давно не появлялось, не должно выглядеть недавно активным;
     // COALESCE на name — пустое имя в конкретном запросе не должно стирать
     // ранее известное человекочитаемое.
+    //
+    // ledger_id — всегда ТЕКУЩИЙ леджер пользователя (change
+    // purge-synced-tombstones, решение 9): после принятия приглашения или
+    // удаления из участников устройство раньше оставалось на прежнем
+    // леджере (наблюдение Р11 baseline). Подтверждение леджера при смене
+    // обнуляется — оно относилось к чужому потоку, и иначе застывшее
+    // значение держало бы горизонт чистки прежнего леджера. Все выражения
+    // SET видят СТАРУЮ строку, поэтому сравнение device.ledger_id
+    // корректно, хотя ledger_id переписывается в том же SET.
     db.exec(
         "INSERT INTO device (id, user_id, ledger_id, platform, name, last_seen_at) "
         "VALUES ($1, $2, $3, $4, $5, now()) "
         "ON CONFLICT (id) DO UPDATE SET "
         "  last_seen_at = now(), platform = EXCLUDED.platform, "
-        "  name = CASE WHEN EXCLUDED.name = '' THEN device.name ELSE EXCLUDED.name END",
+        "  name = CASE WHEN EXCLUDED.name = '' THEN device.name ELSE EXCLUDED.name END, "
+        "  ledger_id = EXCLUDED.ledger_id, "
+        "  last_ack_seq = CASE WHEN device.ledger_id = EXCLUDED.ledger_id "
+        "                      THEN device.last_ack_seq ELSE NULL END",
         {device_id, user_id, identity.ledger_id, platform, device_name});
 
     return identity;

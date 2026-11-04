@@ -1,5 +1,6 @@
 #include "sync.hpp"
 
+#include <cctype>
 #include <optional>
 
 #include "nlohmann/json.hpp"
@@ -118,6 +119,38 @@ int64_t param_or(const httplib::Request& req, const char* name, int64_t fallback
     }
 }
 
+// ledger_id запроса совпадает с текущим леджером? uuid из Postgres — в
+// нижнем регистре, клиент возвращает то, что получил, но регистр не
+// значим — сравниваем без него.
+bool same_uuid(std::string a, std::string b) {
+    auto lower = [](std::string& s) {
+        for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    };
+    lower(a);
+    lower(b);
+    return a == b;
+}
+
+// Чистка tombstone после pull (change purge-synced-tombstones): не чаще
+// раза в час на поток (троттлинг внутри maybe_purge_stream), отдельным
+// соединением пула; ошибка — только в лог, ответ pull уже сформирован и не
+// меняется.
+void purge_after_pull(AppState& state, const std::string& stream_id) {
+    try {
+        sync_repo::maybe_purge_stream(*state.db_pool->acquire(), stream_id, state.tombstone_device_ttl_days);
+    } catch (const std::exception& e) {
+        applog::error("sync tombstone purge failed",
+                      {{"event", "sync_tombstone_purge_failed"}, {"stream_id", stream_id}, {"error", e.what()}});
+    }
+}
+
+json stream_json(const sync_repo::PullResult& r) {
+    json out = {{"next_seq", r.next_seq}, {"reset", r.reset}, {"changes", r.changes}};
+    // reset_reason — только при сбросе (спека sync-pull: без сброса поля нет).
+    if (r.reset) out["reset_reason"] = r.reset_reason;
+    return out;
+}
+
 void handle_pull(AppState& state, const httplib::Request& req, httplib::Response& res) {
     applog::set_route("GET /sync/pull"); // литерал из register_routes ниже
     auto ctx = authenticate_and_provision(state, req, res);
@@ -134,21 +167,31 @@ void handle_pull(AppState& state, const httplib::Request& req, httplib::Response
     auto ledger_result = sync_repo::pull_ledger_stream(*state.db_pool->acquire(), ctx->ledger_id, ledger_cursor, limit);
     auto reference_result = sync_repo::pull_reference_stream(*state.db_pool->acquire(), reference_cursor, limit);
 
+    // Подтверждение (change purge-synced-tombstones): курсор запроса — всё
+    // до него устройство уже применило. При сбросе устройство начинает
+    // поток заново, его подтверждение — 0 (курсор впереди головы или от
+    // вычищенного прошлого ничего не подтверждает). ledger_id запроса не
+    // совпал с текущим леджером — курсор от чужого потока, подтверждение
+    // леджера не пишется; без ledger_id (старые клиенты) — пишется.
+    std::optional<int64_t> ledger_ack = ledger_result.reset ? 0 : ledger_cursor;
+    if (req.has_param("ledger_id") && !same_uuid(req.get_param_value("ledger_id"), ctx->ledger_id)) {
+        ledger_ack = std::nullopt;
+    }
+    int64_t reference_ack = reference_result.reset ? 0 : reference_cursor;
+    sync_repo::record_ack(*state.db_pool->acquire(), ctx->device_id, ledger_ack, reference_ack);
+
     // ledger_id — чтобы клиент заметил смену леджера (другой пользователь
     // при том же email, переход по инвайту) и сбросил курсор сам, не
     // дожидаясь, пока старый курсор окажется дальше головы (reset).
-    json out = {
-        {"ledger",
-         {{"ledger_id", ctx->ledger_id},
-          {"next_seq", ledger_result.next_seq},
-          {"reset", ledger_result.reset},
-          {"changes", ledger_result.changes}}},
-        {"reference",
-         {{"next_seq", reference_result.next_seq},
-          {"reset", reference_result.reset},
-          {"changes", reference_result.changes}}},
-    };
+    json ledger_out = stream_json(ledger_result);
+    ledger_out["ledger_id"] = ctx->ledger_id;
+    json out = {{"ledger", ledger_out}, {"reference", stream_json(reference_result)}};
     res.set_content(out.dump(), kJsonContentType);
+
+    if (state.tombstone_purge) {
+        purge_after_pull(state, ctx->ledger_id);
+        purge_after_pull(state, sync_repo::kReferenceStreamId);
+    }
 }
 
 } // namespace

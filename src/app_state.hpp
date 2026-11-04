@@ -27,4 +27,13 @@ struct AppState {
     // конструктор Pool требует строку подключения, а AppState собирается в
     // main() уже после чтения .env.
     std::unique_ptr<db::Pool> db_pool;
+
+    // Чистка tombstone синка (change purge-synced-tombstones, README,
+    // "Срок хранения удалённых строк"). SYNC_TOMBSTONE_PURGE — выключатель,
+    // по умолчанию off: включать только после релиза Android с вычисткой
+    // при старте с нуля. Подтверждения устройств пишутся при любом значении.
+    // SYNC_TOMBSTONE_DEVICE_TTL_DAYS — устройство без pull дольше этого
+    // срока в горизонт не входит.
+    bool tombstone_purge = false;
+    int tombstone_device_ttl_days = 90;
 };

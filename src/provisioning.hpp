@@ -40,6 +40,10 @@ struct Identity {
 // тела запроса: доверяем только тому, что подписал google-auth. name —
 // опционально, из тела запроса конкретного вызова, только для показа
 // человеку (см. README google-auth, "Детали устройства").
+//
+// device.ledger_id переписывается на текущий леджер пользователя на каждом
+// вызове; при смене леджера подтверждение потока леджера (last_ack_seq)
+// обнуляется — см. .cpp и change purge-synced-tombstones.
 Identity ensure_identity(db::Database& db, const std::string& user_id, const std::string& email,
                           const std::string& device_id, const std::string& device_name,
                           const std::string& platform);
