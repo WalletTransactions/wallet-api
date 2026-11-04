@@ -540,32 +540,77 @@ PullResult run_pull(db::Database& db, const std::string& sql, std::vector<std::s
     return result;
 }
 
-// Константный id потока справочников — см. schema/table/change_stream.sql.
-constexpr const char* kReferenceStreamId = "00000000-0000-0000-0000-000000000001";
+struct StreamState {
+    int64_t head = 0;
+    int64_t purged_seq = 0;
+};
 
-// Голова потока — change_stream.seq; нет строки (леджер удалён) — 0.
-int64_t stream_head(db::Database& db, const std::string& stream_id) {
-    auto res = db.exec("SELECT seq FROM change_stream WHERE id = $1", {stream_id});
-    if (res.rows.empty()) return 0;
-    return std::stoll(res.rows.at(0).fields.at(0));
+// Голова потока и до какого seq он вычищен; нет строки (леджер удалён) — 0/0.
+StreamState stream_state(db::Database& db, const std::string& stream_id) {
+    auto res = db.exec("SELECT seq, purged_seq FROM change_stream WHERE id = $1", {stream_id});
+    if (res.rows.empty()) return {};
+    return {std::stoll(res.rows.at(0).fields.at(0)), std::stoll(res.rows.at(0).fields.at(1))};
 }
 
-// Курсор дальше головы — см. PullResult::reset. Голова только растёт, так
-// что гонка с параллельным push ложного сброса не даст: честный курсор
-// всегда <= головы на момент любого последующего чтения.
-bool rewind_if_ahead(db::Database& db, const std::string& stream_id, int64_t& cursor) {
-    if (cursor <= 0 || cursor <= stream_head(db, stream_id)) return false;
-    applog::warn("pull cursor ahead of stream head — rewinding to 0",
-                 {{"event", "sync_pull_cursor_reset"}, {"stream_id", stream_id}, {"cursor", cursor}});
-    cursor = 0;
-    return true;
+// Курсор дальше головы или отстал от чистки — см. PullResult::reset. Голова
+// и purged_seq только растут, так что гонка с параллельным push/чисткой
+// ложного "ahead" не даст, а "purged" по уже вычищенному — и есть верный
+// ответ. Курсор переводится на 0, страница читается с начала.
+ResetReason rewind_if_needed(db::Database& db, const std::string& stream_id, int64_t& cursor) {
+    if (cursor <= 0) return ResetReason::None;
+    auto state = stream_state(db, stream_id);
+    auto reason = reset_reason_for(cursor, state.head, state.purged_seq);
+    if (reason == ResetReason::Ahead) {
+        applog::warn("pull cursor ahead of stream head — rewinding to 0",
+                     {{"event", "sync_pull_cursor_reset"}, {"stream_id", stream_id}, {"cursor", cursor}});
+    } else if (reason == ResetReason::Purged) {
+        applog::info("pull cursor behind purged tombstones — rewinding to 0",
+                     {{"event", "sync_pull_cursor_purged"},
+                      {"stream_id", stream_id},
+                      {"cursor", cursor},
+                      {"purged_seq", state.purged_seq}});
+    }
+    if (reason != ResetReason::None) cursor = 0;
+    return reason;
+}
+
+void apply_reset(PullResult& result, ResetReason reason) {
+    result.reset = reason != ResetReason::None;
+    result.reset_reason = reset_reason_name(reason);
+}
+
+std::string join_and(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const auto& p : parts) {
+        if (!out.empty()) out += " AND ";
+        out += p;
+    }
+    return out;
 }
 
 } // namespace
 
+const char* const kReferenceStreamId = "00000000-0000-0000-0000-000000000001";
+
+ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq) {
+    if (cursor <= 0) return ResetReason::None;
+    if (cursor > head) return ResetReason::Ahead;
+    if (cursor < purged_seq) return ResetReason::Purged;
+    return ResetReason::None;
+}
+
+const char* reset_reason_name(ResetReason reason) {
+    switch (reason) {
+    case ResetReason::Ahead: return "ahead";
+    case ResetReason::Purged: return "purged";
+    case ResetReason::None: break;
+    }
+    return "";
+}
+
 PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor,
                                int limit) {
-    bool reset = rewind_if_ahead(db, ledger_id, cursor);
+    auto reason = rewind_if_needed(db, ledger_id, cursor);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/true);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $2) AS max_seq FROM "
@@ -573,12 +618,12 @@ PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, in
                        "SELECT tbl, seq, data FROM candidates, cutoff "
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
     auto result = run_pull(db, sql, {ledger_id, std::to_string(cursor), std::to_string(limit)}, cursor);
-    result.reset = reset;
+    apply_reset(result, reason);
     return result;
 }
 
 PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit) {
-    bool reset = rewind_if_ahead(db, kReferenceStreamId, cursor);
+    auto reason = rewind_if_needed(db, kReferenceStreamId, cursor);
     auto candidates = build_candidates(pull_tables(), /*ledger_scoped=*/false);
     std::string sql = candidates.sql +
                        ", cutoff AS (SELECT COALESCE(MAX(seq), $1) AS max_seq FROM "
@@ -586,8 +631,145 @@ PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit) {
                        "SELECT tbl, seq, data FROM candidates, cutoff "
                        "WHERE candidates.seq <= cutoff.max_seq ORDER BY seq";
     auto result = run_pull(db, sql, {std::to_string(cursor), std::to_string(limit)}, cursor);
-    result.reset = reset;
+    apply_reset(result, reason);
     return result;
+}
+
+// --- Срок хранения tombstone ----------------------------------------------
+
+void record_ack(db::Database& db, const std::string& device_id, std::optional<int64_t> ledger_cursor,
+                int64_t reference_cursor) {
+    // '' -> NULL -> COALESCE оставляет прежнее подтверждение леджера: курсор
+    // от чужого леджера подтверждением не считается (см. sync.cpp).
+    db.exec("UPDATE device SET "
+            "  last_ack_seq = COALESCE(NULLIF($2, '')::bigint, last_ack_seq), "
+            "  last_ack_reference_seq = $3::bigint "
+            "WHERE id = $1",
+            {device_id, ledger_cursor ? std::to_string(*ledger_cursor) : std::string{},
+             std::to_string(reference_cursor)});
+}
+
+int64_t stream_horizon(db::Database& db, const std::string& stream_id, int device_ttl_days) {
+    bool reference = stream_id == kReferenceStreamId;
+    // last_seen_at IS NULL не проходит сравнение — такое устройство и так
+    // ни разу не обращалось к /sync/*. LEAST с головой: подтверждение от
+    // старого клиента без ledger_id теоретически может обогнать голову
+    // нового леджера, чистить дальше головы нечего.
+    std::string sql =
+        "SELECT LEAST(cs.seq, COALESCE(("
+        "  SELECT MIN(" + std::string(reference ? "d.last_ack_reference_seq" : "d.last_ack_seq") + ")"
+        "  FROM device d WHERE " +
+        (reference ? std::string("d.last_ack_reference_seq IS NOT NULL")
+                   : std::string("d.ledger_id = cs.id AND d.last_ack_seq IS NOT NULL")) +
+        "  AND d.last_seen_at >= now() - make_interval(days => $2::int)"
+        "), cs.seq)) FROM change_stream cs WHERE cs.id = $1";
+    auto res = db.exec(sql, {stream_id, std::to_string(device_ttl_days)});
+    if (res.rows.empty()) return 0;
+    return std::stoll(res.rows.at(0).fields.at(0));
+}
+
+const std::vector<TableRef>& sync_table_refs() {
+    // Сверено с schema/table/*.sql (REFERENCES/FOREIGN KEY между таблицами
+    // синка). Новая ссылка между таблицами синка — сюда, иначе DELETE чистки
+    // упадёт на FK (NO ACTION) или молча утащит каскадом живые строки
+    // (CASCADE).
+    static const std::vector<TableRef> refs = {
+        {"account", {"icon_uuid"}, "icon", {"uuid"}},
+        {"account_operating", {"ledger_id", "uuid"}, "account", {"ledger_id", "uuid"}},
+        {"account_operating", {"currency_uuid"}, "currency", {"uuid"}},
+        {"operation", {"ledger_id", "acc_fr_uuid"}, "account", {"ledger_id", "uuid"}},
+        {"operation", {"ledger_id", "acc_to_uuid"}, "account", {"ledger_id", "uuid"}},
+        {"operation_link", {"ledger_id", "main_uuid"}, "operation", {"ledger_id", "uuid"}},
+        {"operation_link", {"ledger_id", "link_uuid"}, "operation", {"ledger_id", "uuid"}},
+        {"currency", {"icon_uuid"}, "icon", {"uuid"}},
+        {"currency_pair", {"base_currency_uuid"}, "currency", {"uuid"}},
+        {"currency_pair", {"quote_currency_uuid"}, "currency", {"uuid"}},
+        {"currency_pair_rate", {"currency_pair_uuid"}, "currency_pair", {"uuid"}},
+        {"currency_conversion", {"from_currency_uuid"}, "currency", {"uuid"}},
+        {"currency_conversion", {"to_currency_uuid"}, "currency", {"uuid"}},
+        {"currency_conversion", {"currency_pair_uuid"}, "currency_pair", {"uuid"}},
+    };
+    return refs;
+}
+
+const std::vector<std::string>& purge_order() {
+    static const std::vector<std::string> order = {
+        "operation_link", "operation",     "account_operating", "account", "currency_conversion",
+        "currency_pair_rate", "currency_pair", "currency",      "icon",
+    };
+    return order;
+}
+
+std::vector<PurgeStatement> build_purge_statements(bool ledger_stream) {
+    std::vector<PurgeStatement> out;
+    for (const auto& table : purge_order()) {
+        const TableSpec* spec = find_spec(pull_tables(), table);
+        if (spec == nullptr) continue; // юнит-тест не даёт этому случиться
+        if (!ledger_stream && spec->scope != Scope::ReferenceOrLedger) continue;
+
+        std::vector<std::string> where = {
+            ledger_stream ? "p.ledger_id = $1" : "p.ledger_id IS NULL",
+            "p.deleted_at IS NOT NULL",
+            ledger_stream ? "p.seq <= $2" : "p.seq <= $1",
+        };
+        // Ссылки ищутся без фильтра по леджеру и по deleted_at: строка
+        // любого леджера (свой счёт на общую иконку) и любой tombstone тоже
+        // держат родителя — иначе DELETE упал бы на FK или унёс бы их
+        // каскадом.
+        for (const auto& ref : sync_table_refs()) {
+            if (ref.parent != table) continue;
+            std::vector<std::string> match;
+            for (std::size_t i = 0; i < ref.child_columns.size(); ++i) {
+                match.push_back("c." + ref.child_columns[i] + " = p." + ref.parent_columns[i]);
+            }
+            where.push_back("NOT EXISTS (SELECT 1 FROM " + ref.child + " c WHERE " + join_and(match) + ")");
+        }
+        out.push_back({table, "DELETE FROM " + table + " p WHERE " + join_and(where)});
+    }
+    return out;
+}
+
+PurgeStats purge_stream(db::Database& db, const std::string& stream_id, int64_t horizon) {
+    bool ledger_stream = stream_id != kReferenceStreamId;
+    PurgeStats stats;
+    stats.horizon = horizon;
+
+    auto tx = db.begin_transaction();
+    for (const auto& st : build_purge_statements(ledger_stream)) {
+        // RETURNING 1 — у Result нет счётчика затронутых строк, а число
+        // удалённых нужно для лога.
+        auto res = ledger_stream ? tx.exec(st.sql + " RETURNING 1", {stream_id, std::to_string(horizon)})
+                                 : tx.exec(st.sql + " RETURNING 1", {std::to_string(horizon)});
+        stats.deleted_rows += static_cast<int64_t>(res.rows.size());
+    }
+    auto res = tx.exec("UPDATE change_stream SET purged_seq = GREATEST(purged_seq, $2::bigint) "
+                       "WHERE id = $1 RETURNING purged_seq",
+                       {stream_id, std::to_string(horizon)});
+    if (!res.rows.empty()) stats.purged_seq = std::stoll(res.rows.at(0).fields.at(0));
+    tx.commit();
+    return stats;
+}
+
+std::optional<PurgeStats> maybe_purge_stream(db::Database& db, const std::string& stream_id,
+                                             int device_ttl_days) {
+    // Атомарный слот: из двух параллельных pull слот получит один, второй
+    // увидит свежий purged_at. Слот занимается ДО чистки и отдельно от неё —
+    // упавшая чистка повторится через час, а не на каждом pull.
+    auto slot = db.exec("UPDATE change_stream SET purged_at = now() "
+                        "WHERE id = $1 AND (purged_at IS NULL OR purged_at < now() - interval '1 hour') "
+                        "RETURNING id",
+                        {stream_id});
+    if (slot.rows.empty()) return std::nullopt;
+
+    int64_t horizon = stream_horizon(db, stream_id, device_ttl_days);
+    auto stats = purge_stream(db, stream_id, horizon);
+    applog::info("sync tombstones purged",
+                 {{"event", "sync_tombstone_purge"},
+                  {"stream_id", stream_id},
+                  {"horizon", stats.horizon},
+                  {"purged_seq", stats.purged_seq},
+                  {"deleted_rows", stats.deleted_rows}});
+    return stats;
 }
 
 } // namespace sync_repo

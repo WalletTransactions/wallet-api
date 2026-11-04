@@ -14,7 +14,10 @@
 CREATE TABLE change_stream (
     id   uuid PRIMARY KEY,
     kind text   NOT NULL CHECK (kind IN ('ledger', 'reference')),
-    seq  bigint NOT NULL DEFAULT 0 CHECK (seq >= 0)
+    seq  bigint NOT NULL DEFAULT 0 CHECK (seq >= 0),
+    -- Чистка tombstone (change purge-synced-tombstones, миграция 000028).
+    purged_seq bigint NOT NULL DEFAULT 0 CHECK (purged_seq >= 0),
+    purged_at  timestamptz
 );
 
 -- Поток общих справочников. Это константа схемы, а не пользовательские данные:
@@ -30,3 +33,7 @@ COMMENT ON COLUMN change_stream.kind IS
     '''ledger'' — персональный поток одного леджера (счета, операции, свои валюты/иконки); ''reference'' — общий поток на всю базу (общие иконки/валюты/пары/курсы).';
 COMMENT ON COLUMN change_stream.seq IS
     'Текущее значение счётчика версий этого потока. Растёт монотонно только через next_seq() — не SEQUENCE и не время (см. ../README.md, "Версия строки — seq, а не время").';
+COMMENT ON COLUMN change_stream.purged_seq IS
+    'До какого seq поток вычищен от tombstone. pull с курсором 0 < cursor < purged_seq отвечает reset: true, reset_reason: "purged". 0 — чистки не было.';
+COMMENT ON COLUMN change_stream.purged_at IS
+    'Момент последней чистки потока (или попытки) — троттлинг «не чаще раза в час». NULL — чистки не было.';

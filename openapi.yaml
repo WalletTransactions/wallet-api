@@ -269,19 +269,43 @@ paths:
 
         Курсор БОЛЬШЕ головы потока (такого seq сервер не выдавал — курсор от
         другого леджера или пересозданной базы) — поток отдаётся с нуля и
-        `reset: true`; клиент просто сохраняет `next_seq`, как обычно.
-        `ledger.ledger_id` — леджер, к которому относится поток: клиент,
-        заметив смену, должен сам начать поток `ledger` с 0.
+        `reset: true`, `reset_reason: "ahead"`; клиент просто сохраняет
+        `next_seq`, как обычно. `ledger.ledger_id` — леджер, к которому
+        относится поток: клиент, заметив смену, должен сам начать поток
+        `ledger` с 0.
+
+        **Подтверждение.** Курсоры запроса (`ledger_seq`, `reference_seq`)
+        сервер записывает как подтверждение устройства: всё до этого `seq`
+        клиент уже применил и сохранил (поэтому курсор передаётся только
+        после применения страницы). По минимуму подтверждений активных
+        устройств (pull за последние 90 дней) сервер физически вычищает
+        удалённые строки (`deleted_at`), которые уже получили все, — см.
+        README, "Срок хранения удалённых строк". Если передан `ledger_id` и он
+        не совпадает с текущим леджером пользователя, подтверждение потока
+        `ledger` не пишется (курсор от прежнего леджера).
+
+        **Отставание от чистки.** Курсор `0 < cursor < purged_seq` (часть
+        удалений, которых клиент не видел, уже вычищена) — поток отдаётся с
+        нуля, `reset: true`, `reset_reason: "purged"`. Клиент должен
+        перезагрузить поток целиком и удалить у себя строки этого потока,
+        которые не пришли при перезагрузке. Без сброса поля `reset_reason`
+        в ответе нет.
       tags: [sync]
       security: [{bearerAuth: [], sessionCookie: []}]
       parameters:
         - name: ledger_seq
           in: query
           schema: {type: integer, format: int64, default: 0}
-          description: Курсор потока leger — 0, если синк по этому потоку ещё не происходил
+          description: "Курсор потока ledger — 0, если синк по этому потоку ещё не происходил. Он же подтверждение устройства (см. описание выше)"
         - name: reference_seq
           in: query
           schema: {type: integer, format: int64, default: 0}
+          description: "Курсор потока справочников; он же подтверждение устройства"
+        - name: ledger_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+          description: "Леджер, к которому относится `ledger_seq` (последний `ledger.ledger_id` из ответа). Не совпал с текущим леджером — подтверждение потока ledger не записывается. Не передан — записывается (старые клиенты)"
         - name: limit
           in: query
           schema: {type: integer, default: 500}
@@ -307,14 +331,16 @@ paths:
                     properties:
                       ledger_id: {type: string, format: uuid, description: "Леджер потока — смена означает, что курсор надо начать с 0"}
                       next_seq: {type: integer, format: int64}
-                      reset: {type: boolean, description: "Курсор был дальше головы потока — страница отдана с нуля"}
+                      reset: {type: boolean, description: "Поток отдан с нуля — курсор впереди головы или отстал от чистки (см. reset_reason)"}
+                      reset_reason: {type: string, enum: [ahead, purged], description: "Только при reset: true. ahead — курсор дальше головы потока; purged — курсор меньше purged_seq, клиент перезагружает поток и удаляет у себя строки, не пришедшие при перезагрузке"}
                       changes: {$ref: "#/components/schemas/SyncPullChanges"}
                     required: [ledger_id, next_seq, reset, changes]
                   reference:
                     type: object
                     properties:
                       next_seq: {type: integer, format: int64}
-                      reset: {type: boolean, description: "Курсор был дальше головы потока — страница отдана с нуля"}
+                      reset: {type: boolean, description: "Поток отдан с нуля — курсор впереди головы или отстал от чистки (см. reset_reason)"}
+                      reset_reason: {type: string, enum: [ahead, purged], description: "Только при reset: true. ahead — курсор дальше головы потока; purged — курсор меньше purged_seq, клиент перезагружает поток и удаляет у себя строки, не пришедшие при перезагрузке"}
                       changes: {$ref: "#/components/schemas/SyncPullChanges"}
                     required: [next_seq, reset, changes]
                 required: [ledger, reference]

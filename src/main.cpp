@@ -209,6 +209,28 @@ int main() {
         return 1;
     }
 
+    // Чистка tombstone синка (change purge-synced-tombstones) — см.
+    // AppState и README, "Срок хранения удалённых строк". "on"/"true"/"1" —
+    // включено, всё остальное (в том числе пусто) — off.
+    {
+        std::string purge = env_or("SYNC_TOMBSTONE_PURGE", "off");
+        state.tombstone_purge = purge == "on" || purge == "true" || purge == "1";
+        try {
+            state.tombstone_device_ttl_days = std::stoi(env_or("SYNC_TOMBSTONE_DEVICE_TTL_DAYS", "90"));
+        } catch (const std::exception&) {
+            state.tombstone_device_ttl_days = 0;
+        }
+        if (state.tombstone_device_ttl_days < 1) {
+            applog::error("SYNC_TOMBSTONE_DEVICE_TTL_DAYS должен быть положительным целым");
+            return 1;
+        }
+        applog::info(std::string("sync tombstone purge: ") + (state.tombstone_purge ? "on" : "off") +
+                         ", device ttl " + std::to_string(state.tombstone_device_ttl_days) + " days",
+                     {{"event", "sync_tombstone_config"},
+                      {"purge", state.tombstone_purge},
+                      {"device_ttl_days", state.tombstone_device_ttl_days}});
+    }
+
     std::string host = env_or("HOST", "127.0.0.1");
     int port = std::stoi(env_or("PORT", "8082"));
 
