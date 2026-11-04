@@ -218,22 +218,35 @@ struct PullResult {
     // "ahead" | "purged" при reset, пусто без сброса (в ответ поле тогда не
     // попадает, см. sync.cpp).
     std::string reset_reason;
+    // purged_seq потока на момент чтения — в ответ не идёт; sync.cpp пишет его
+    // в device.*_load_base_seq, когда устройство начинает поток с нуля.
+    int64_t purged_seq = 0;
 };
 
 // Причина сброса курсора — чистая функция ради юнит-тестов. head — голова
 // потока, purged_seq — до какого seq он вычищен. Курсор 0 — не отставание:
 // клиент и так читает с нуля. Впереди головы — "ahead" (проверяется первым:
 // такой курсор вообще не от этого потока).
+//
+// load_base — purged_seq потока, когда устройство последний раз начинало его
+// с нуля (device.*_load_base_seq). Пока purged_seq не вырос дальше load_base,
+// курсор ниже purged_seq — граница страницы загрузки с нуля, а не отставание:
+// без этого загрузка, которой нужно больше одной страницы, после первой же
+// чистки зацикливалась (13 < 77 -> "purged" -> снова 0 -> снова 13).
 enum class ResetReason { None, Ahead, Purged };
-ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq);
+ResetReason reset_reason_for(int64_t cursor, int64_t head, int64_t purged_seq,
+                             std::optional<int64_t> load_base = std::nullopt);
 const char* reset_reason_name(ResetReason reason); // "" | "ahead" | "purged"
 
 // Курсор — bigint клиента, лимит — сколько строк добирать (страница может
 // оказаться БОЛЬШЕ limit — см. README wallet-api/schema, "Курсор и страницы":
 // группа с одинаковым seq никогда не разрезается). Сброс курсора — см.
 // PullResult::reset.
-PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor, int limit);
-PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit);
+// load_base — см. reset_reason_for.
+PullResult pull_ledger_stream(db::Database& db, const std::string& ledger_id, int64_t cursor, int limit,
+                              std::optional<int64_t> load_base = std::nullopt);
+PullResult pull_reference_stream(db::Database& db, int64_t cursor, int limit,
+                                 std::optional<int64_t> load_base = std::nullopt);
 
 // --- Срок хранения tombstone (change purge-synced-tombstones) ---------------
 
@@ -245,8 +258,20 @@ extern const char* const kReferenceStreamId;
 // страницы). Пишется как есть, в том числе меньше прежнего. ledger_cursor =
 // nullopt — подтверждение леджера не трогается (ledger_id запроса не совпал
 // с текущим леджером, см. sync.cpp).
+//
+// *_load_base — purged_seq потока, если устройство в этом запросе начало его с
+// нуля (курсор 0 или сброс): пишется в device.*_load_base_seq; nullopt — не
+// трогается.
 void record_ack(db::Database& db, const std::string& device_id, std::optional<int64_t> ledger_cursor,
-                int64_t reference_cursor);
+                int64_t reference_cursor, std::optional<int64_t> ledger_load_base = std::nullopt,
+                std::optional<int64_t> reference_load_base = std::nullopt);
+
+// device.ledger_load_base_seq / reference_load_base_seq (NULL -> nullopt).
+struct LoadBases {
+    std::optional<int64_t> ledger;
+    std::optional<int64_t> reference;
+};
+LoadBases device_load_bases(db::Database& db, const std::string& device_id);
 
 // Горизонт чистки потока: минимум подтверждений устройств, у которых
 // подтверждение есть и last_seen_at не старше device_ttl_days. Поток

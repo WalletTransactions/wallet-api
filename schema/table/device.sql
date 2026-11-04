@@ -25,6 +25,10 @@
 -- "Срок хранения удалённых строк"). ledger_id — всегда текущий леджер
 -- пользователя: при переходе в другой леджер устройство переписывается, а
 -- подтверждение леджера обнуляется.
+--
+-- ledger_load_base_seq/reference_load_base_seq (миграция 000029) — purged_seq
+-- потока в момент последнего pull с курсора 0: пока он не вырос, курсор
+-- ниже purged_seq — загрузка с нуля по страницам, а не отставание.
 CREATE TABLE device (
     id           uuid PRIMARY KEY,
     user_id      uuid NOT NULL REFERENCES app_user (id) ON DELETE CASCADE,
@@ -35,6 +39,8 @@ CREATE TABLE device (
     last_seen_at timestamptz,
     last_ack_seq bigint,
     last_ack_reference_seq bigint,
+    ledger_load_base_seq bigint,
+    reference_load_base_seq bigint,
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
@@ -56,4 +62,8 @@ COMMENT ON COLUMN device.last_ack_seq IS
     'Подтверждение потока леджера: курсор ledger_seq последнего GET /sync/pull — всё до него устройство применило. NULL — устройство не читало поток своего текущего леджера (бот, только push; или сразу после перехода в другой леджер). Входит в горизонт чистки tombstone.';
 COMMENT ON COLUMN device.last_ack_reference_seq IS
     'Подтверждение потока справочников: курсор reference_seq последнего GET /sync/pull. NULL — устройство не читало поток. Входит в горизонт чистки tombstone справочников.';
+COMMENT ON COLUMN device.ledger_load_base_seq IS
+    'purged_seq потока леджера в момент последнего GET /sync/pull этого устройства с ledger_seq = 0 (или сброса). Пока purged_seq не вырос, курсор ниже него не даёт reset "purged" — загрузка с нуля идёт по страницам. NULL — с нуля не грузилось или сменило леджер.';
+COMMENT ON COLUMN device.reference_load_base_seq IS
+    'То же для потока справочников (reference_seq = 0).';
 COMMENT ON COLUMN device.created_at IS 'Момент первой регистрации устройства.';

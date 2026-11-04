@@ -348,6 +348,25 @@ TEST(reset_reason_none_when_cursor_equals_purged_seq_or_head) {
     CHECK(sync_repo::reset_reason_for(10, 600, 0) == sync_repo::ResetReason::None);
 }
 
+TEST(reset_reason_none_while_loading_from_zero_and_purged_seq_not_grown) {
+    // Ручная проверка на test 2026-11-04: загрузка с нуля, первая страница
+    // кончилась на 13, поток вычищен до 77 — без отметки начала загрузки
+    // "purged" отправлял устройство снова на 0, бесконечно.
+    CHECK(sync_repo::reset_reason_for(13, 78, 77, 77) == sync_repo::ResetReason::None);
+    // Отметка с бóльшим purged_seq (чистка откатиться не может, но пусть) — тоже не отставание.
+    CHECK(sync_repo::reset_reason_for(13, 78, 77, 90) == sync_repo::ResetReason::None);
+}
+
+TEST(reset_reason_purged_when_purged_seq_grew_since_load_started) {
+    // Устройство начинало при purged_seq 77, бросило загрузку, выпало из
+    // горизонта, поток вычищен дальше — удаления после 13 потеряны.
+    CHECK(sync_repo::reset_reason_for(13, 120, 100, 77) == sync_repo::ResetReason::Purged);
+    // Устройство грузилось с нуля ещё до любой чистки.
+    CHECK(sync_repo::reset_reason_for(13, 120, 100, 0) == sync_repo::ResetReason::Purged);
+    // "ahead" по-прежнему первым.
+    CHECK(sync_repo::reset_reason_for(200, 120, 100, 100) == sync_repo::ResetReason::Ahead);
+}
+
 TEST(reset_reason_names) {
     CHECK_EQ(std::string(sync_repo::reset_reason_name(sync_repo::ResetReason::None)), std::string(""));
     CHECK_EQ(std::string(sync_repo::reset_reason_name(sync_repo::ResetReason::Ahead)), std::string("ahead"));
