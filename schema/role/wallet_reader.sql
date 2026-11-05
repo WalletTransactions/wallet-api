@@ -65,10 +65,11 @@ GRANT EXECUTE ON FUNCTION f_balance_to_date(uuid, timestamp, uuid)             T
 GRANT EXECUTE ON FUNCTION f_income_for_period(uuid, timestamp, timestamp, uuid)  TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_expanse_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_expanse_by_category_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
+GRANT EXECUTE ON FUNCTION f_expense_by_category_by_month(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_income_expense_by_month(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_expense_by_weekday_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
-GRANT EXECUTE ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text) TO wallet_reader;
-GRANT EXECUTE ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text) TO wallet_reader;
+GRANT EXECUTE ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) TO wallet_reader;
+GRANT EXECUTE ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_wallet_turnover_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_balance_to_dates(uuid, timestamp[], uuid) TO wallet_reader;
 

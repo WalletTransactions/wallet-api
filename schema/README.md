@@ -73,7 +73,7 @@ golang-migrate его не применит). `apply.sql` целиком про�
 | --- | --- |
 | `table/` | `CREATE TABLE` с индексами и триггерами по каждой таблице — см. [table/README.md](table/README.md) |
 | `view/` | Порт клиентских представлений с арендатором и областями видимости — см. [view/README.md](view/README.md) |
-| `function/` | Служебные `next_seq` и `set_updated_at` плюс отчётные: `f_balance_to_date`, `f_income_for_period`, `f_expanse_for_period` — порт `client/select/`, и веб-only — в том числе лента `f_operations_for_period` с курсором и фильтрами (категории, кошельки, `kind`, подстрока комментария `q`) и итог `f_operations_total` по тем же фильтрам (с `kind` — сумма, без — сальдо доход − расход, переводы 0; спека wallet-report `operations-list`), см. [function/README.md](function/README.md) |
+| `function/` | Служебные `next_seq` и `set_updated_at` плюс отчётные: `f_balance_to_date`, `f_income_for_period`, `f_expanse_for_period` — порт `client/select/`, и веб-only — в том числе лента `f_operations_for_period` с курсором и фильтрами (категории, исключение категорий, кошельки, `kind`, подстрока комментария `q`), матрица «категория × месяц» `f_expense_by_category_by_month` и итог `f_operations_total` по тем же фильтрам (с `kind` — сумма, без — сальдо доход − расход, переводы 0; спека wallet-report `operations-list`), см. [function/README.md](function/README.md) |
 | `role/` | Роли базы и их гранты; пока одна — `wallet_reader` для сервиса отчётов, см. [role/README.md](role/README.md) |
 
 Представления существуют **для сервиса отчётов**, а не для клиента. Приложение

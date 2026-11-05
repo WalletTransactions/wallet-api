@@ -1,6 +1,6 @@
 -- Итог ленты операций (wallet-report /api/reports/operations с фильтрами,
 -- change add-operations-filter-functions) — по ТЕМ ЖЕ условиям, что
--- f_operations_for_period (категории, кошельки, kind, q; см. её шапку), но за
+-- f_operations_for_period (категории, исключённые категории — 000030, кошельки, kind, q; см. её шапку), но за
 -- весь период: курсор и лимит итог не учитывает. Смысл и результаты — спека
 -- wallet-report operations-list.
 --
@@ -24,17 +24,18 @@
 -- скан ix_operation_date под LIMIT. Две копии страхует тест согласованности
 -- wallet-report (итог = сумма по всем страницам).
 --
--- Источник истины — миграция wallet-api/migrations/000027_operations_filters.up.sql;
--- этот файл — её читаемое зеркало.
+-- Источник истины — миграции wallet-api/migrations/000027_operations_filters.up.sql
+-- и 000030_category_month_analytics.up.sql; этот файл — их читаемое зеркало.
 CREATE FUNCTION f_operations_total(
-    p_ledger_id      uuid,
-    p_from           timestamp,
-    p_to             timestamp,
-    p_eq_currency    uuid,
-    p_category_uuids uuid[] DEFAULT NULL,
-    p_wallet_uuids   uuid[] DEFAULT NULL,
-    p_kind           text   DEFAULT NULL,
-    p_q              text   DEFAULT NULL
+    p_ledger_id              uuid,
+    p_from                   timestamp,
+    p_to                     timestamp,
+    p_eq_currency            uuid,
+    p_category_uuids         uuid[] DEFAULT NULL,
+    p_wallet_uuids           uuid[] DEFAULT NULL,
+    p_kind                   text   DEFAULT NULL,
+    p_q                      text   DEFAULT NULL,
+    p_exclude_category_uuids uuid[] DEFAULT NULL
 ) RETURNS TABLE (
     total_eq   numeric,
     incomplete boolean,
@@ -57,6 +58,9 @@ AS $$
            AND (p_category_uuids IS NULL
                 OR (NOT o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_category_uuids))
                 OR (NOT o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_category_uuids)))
+           AND (p_exclude_category_uuids IS NULL
+                OR NOT ((NOT o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_exclude_category_uuids))
+                     OR (NOT o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_exclude_category_uuids))))
            AND (p_wallet_uuids IS NULL
                 OR (o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_wallet_uuids))
                 OR (o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_wallet_uuids)))
@@ -76,5 +80,5 @@ AS $$
       FROM m;
 $$;
 
-COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text) IS
-    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграция 000027.';
+COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) IS
+    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграции 000027, 000030.';
