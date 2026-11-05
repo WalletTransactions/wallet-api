@@ -13,8 +13,9 @@
 -- обычных категорий и сведены в Transfer как net. Сумма матрицы за период
 -- совпадает со «Структурой расходов», а не с «Обзором». Месяц Transfer с
 -- выигрышем на курсе даёт отрицательную сумму, месяц с net = 0 не
--- возвращается; сама категория Transfer есть, только если net за весь
--- период отрицателен (условие строки Transfer в структуре).
+-- возвращается. Курсовая разница (и её месяцы) входит в Transfer, только если
+-- net за весь период отрицателен (условие строки Transfer в структуре);
+-- обычная трата в категорию Transfer — всегда, в той же клетке месяца.
 --
 -- Итоги — агрегатами в самом запросе, не сложением у вызывающего:
 -- category_amount_eq (round суммы за период — ровно amount_eq строки
@@ -22,7 +23,7 @@
 -- category_amount_eq, как total_eq структуры), incomplete клетки —
 -- bool_or(amount_eq IS NULL).
 --
--- Источник истины — миграция wallet-api/migrations/000030_category_month_analytics.up.sql;
+-- Источник истины — миграция wallet-api/migrations/000031_matrix_transfer_cells.up.sql;
 -- этот файл — её читаемое зеркало.
 CREATE FUNCTION f_expense_by_category_by_month(
     p_ledger_id   uuid,
@@ -86,24 +87,40 @@ AS $$
         SELECT a.uuid FROM account a
          WHERE a.ledger_id = p_ledger_id AND a.system_kind = 1 AND a.deleted_at IS NULL
     ),
-    cats AS (
-        SELECT r.account_uuid, sum(r.amt) AS amt, sum(r.n)::bigint AS n
-          FROM regular r
-         GROUP BY r.account_uuid
-        UNION ALL
-        SELECT ta.uuid, -sum(tl.signed_eq), count(DISTINCT tl.main_uuid)
-          FROM transfer_legs tl CROSS JOIN transfer_account ta
-         GROUP BY ta.uuid
-        HAVING sum(tl.signed_eq) < 0
+    -- Курсовая разница переводов входит в Transfer, только если за ВЕСЬ
+    -- период это потеря (net < 0) — условие строки Transfer в структуре. Тогда
+    -- же и только тогда в клетки идут её помесячные части: сумма месяцев
+    -- Transfer равна её итогу (000031; в 000030 клетки шли всегда и при
+    -- выигрыше за период расходились с итогом).
+    transfer_period AS (
+        SELECT sum(tl.signed_eq) AS net, count(DISTINCT tl.main_uuid) AS n
+          FROM transfer_legs tl
     ),
-    cells AS (
-        SELECT r.account_uuid, r.month_start, r.amt, r.n, r.inc
-          FROM regular r
-        UNION ALL
-        SELECT ta.uuid, tl.month_start, -sum(tl.signed_eq), count(DISTINCT tl.main_uuid), bool_or(tl.no_rate)
+    transfer_cells AS (
+        SELECT ta.uuid AS account_uuid, tl.month_start,
+               -sum(tl.signed_eq) AS amt, count(DISTINCT tl.main_uuid) AS n, bool_or(tl.no_rate) AS inc
           FROM transfer_legs tl CROSS JOIN transfer_account ta
+         WHERE (SELECT tp.net FROM transfer_period tp) < 0
          GROUP BY ta.uuid, tl.month_start
         HAVING sum(tl.signed_eq) IS DISTINCT FROM 0
+    ),
+    -- Обычная трата в саму категорию Transfer и курсовая потеря — одна
+    -- категория и одна клетка на месяц (в 000030 — две строки одного месяца).
+    cats AS (
+        SELECT x.account_uuid, sum(x.amt) AS amt, sum(x.n)::bigint AS n
+          FROM (SELECT r.account_uuid, r.amt, r.n FROM regular r
+                UNION ALL
+                SELECT ta.uuid, -tp.net, tp.n
+                  FROM transfer_period tp CROSS JOIN transfer_account ta
+                 WHERE tp.net < 0) x
+         GROUP BY x.account_uuid
+    ),
+    cells AS (
+        SELECT x.account_uuid, x.month_start, sum(x.amt) AS amt, sum(x.n)::bigint AS n, bool_or(x.inc) AS inc
+          FROM (SELECT r.account_uuid, r.month_start, r.amt, r.n, r.inc FROM regular r
+                UNION ALL
+                SELECT tc.account_uuid, tc.month_start, tc.amt, tc.n, tc.inc FROM transfer_cells tc) x
+         GROUP BY x.account_uuid, x.month_start
     ),
     cats_rounded AS (
         SELECT c.account_uuid, round(c.amt, (SELECT p FROM prec)) AS amt, c.n FROM cats c
