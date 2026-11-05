@@ -19,6 +19,9 @@
 -- - p_wallet_uuids — операционная сторона в списке: прямой перевод кошелёк →
 --   кошелёк подходит по любому из двух кошельков; uuid категории среди
 --   кошельков (и наоборот) ни с чем не совпадёт;
+-- - p_exclude_category_uuids (000030) — исключение: операции, чья
+--   неоперационная сторона в списке, отбрасываются; прямой перевод
+--   кошелёк → кошелёк (категории нет) остаётся;
 -- - p_kind — то же выражение по флагам, что у колонки kind;
 -- - p_q — strpos(lower(translate(comment, 'Ёё', 'Ее')), …) > 0: без учёта
 --   регистра, «ё» = «е» (та же нормализация, что uq_account_name), % и _
@@ -79,21 +82,22 @@
 --
 -- Источник истины — реальные миграции
 -- wallet-api/migrations/000007_operations.up.sql и
--- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql (см.
--- ../../README.md про этот принцип); этот файл — читаемое зеркало ТЕКУЩЕГО
--- состояния (после всех трёх).
+-- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql,
+-- 000030_category_month_analytics.up.sql (см. ../../README.md про этот
+-- принцип); этот файл — читаемое зеркало ТЕКУЩЕГО состояния (после всех).
 CREATE FUNCTION f_operations_for_period(
-    p_ledger_id      uuid,
-    p_from           timestamp,
-    p_to             timestamp,
-    p_eq_currency    uuid,
-    p_limit          integer   DEFAULT 1000,
-    p_cursor_date    timestamp DEFAULT NULL,
-    p_cursor_uuid    uuid      DEFAULT NULL,
-    p_category_uuids uuid[]    DEFAULT NULL,
-    p_wallet_uuids   uuid[]    DEFAULT NULL,
-    p_kind           text      DEFAULT NULL,
-    p_q              text      DEFAULT NULL
+    p_ledger_id              uuid,
+    p_from                   timestamp,
+    p_to                     timestamp,
+    p_eq_currency            uuid,
+    p_limit                  integer   DEFAULT 1000,
+    p_cursor_date            timestamp DEFAULT NULL,
+    p_cursor_uuid            uuid      DEFAULT NULL,
+    p_category_uuids         uuid[]    DEFAULT NULL,
+    p_wallet_uuids           uuid[]    DEFAULT NULL,
+    p_kind                   text      DEFAULT NULL,
+    p_q                      text      DEFAULT NULL,
+    p_exclude_category_uuids uuid[]    DEFAULT NULL
 ) RETURNS TABLE (
     operation_uuid uuid,
     "date"         timestamp,
@@ -155,6 +159,9 @@ AS $$
        AND (p_category_uuids IS NULL
             OR (NOT o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_category_uuids))
             OR (NOT o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_category_uuids)))
+       AND (p_exclude_category_uuids IS NULL
+            OR NOT ((NOT o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_exclude_category_uuids))
+                 OR (NOT o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_exclude_category_uuids))))
        AND (p_wallet_uuids IS NULL
             OR (o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_wallet_uuids))
             OR (o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_wallet_uuids)))
@@ -169,5 +176,5 @@ AS $$
      LIMIT p_limit;
 $$;
 
-COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text) IS
-    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, кошельки, kind, подстрока комментария q) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграция 000027.';
+COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) IS
+    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, исключённые категории, кошельки, kind, подстрока комментария q) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграции 000027, 000030.';

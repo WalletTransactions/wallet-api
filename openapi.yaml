@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: wallet-api
-  version: "1.0.0"
+  version: "0.3.0"
   description: |
     Домен леджера/синка (`org/docs/TODO_mobile_sync.md`, Фаза 2) + демо-CRUD
     кошельков. Своя Postgres-база, токен не выпускает и не ротирует — только
