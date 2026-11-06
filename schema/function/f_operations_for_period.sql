@@ -27,6 +27,10 @@
 --   регистра, «ё» = «е» (та же нормализация, что uq_account_name), % и _
 --   ищутся буквально. Индекса под q нет — просмотр ограничен леджером и
 --   периодом по ix_operation_date.
+-- - p_qs (000032) — несколько вариантов той же подстроки: комментарий
+--   подходит, если содержит ЛЮБОЙ элемент массива (правила как у p_q).
+--   Операция, подходящая под два варианта, — одна строка. С p_q вместе —
+--   по И (wallet-report их вместе не передаёт).
 -- Проверка входных значений (допустимый kind, длина q, число uuid) — дело
 -- wallet-report до вызова; функция просто фильтрует.
 --
@@ -83,7 +87,8 @@
 -- Источник истины — реальные миграции
 -- wallet-api/migrations/000007_operations.up.sql и
 -- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql,
--- 000030_category_month_analytics.up.sql (см. ../../README.md про этот
+-- 000030_category_month_analytics.up.sql,
+-- 000032_operations_text_variants.up.sql (см. ../../README.md про этот
 -- принцип); этот файл — читаемое зеркало ТЕКУЩЕГО состояния (после всех).
 CREATE FUNCTION f_operations_for_period(
     p_ledger_id              uuid,
@@ -97,7 +102,8 @@ CREATE FUNCTION f_operations_for_period(
     p_wallet_uuids           uuid[]    DEFAULT NULL,
     p_kind                   text      DEFAULT NULL,
     p_q                      text      DEFAULT NULL,
-    p_exclude_category_uuids uuid[]    DEFAULT NULL
+    p_exclude_category_uuids uuid[]    DEFAULT NULL,
+    p_qs                     text[]    DEFAULT NULL
 ) RETURNS TABLE (
     operation_uuid uuid,
     "date"         timestamp,
@@ -171,10 +177,13 @@ AS $$
                     ELSE                                                        'income' END = p_kind)
        AND (p_q IS NULL
             OR strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(p_q, 'Ёё', 'Ее'))) > 0)
+       AND (p_qs IS NULL
+            OR EXISTS (SELECT 1 FROM unnest(p_qs) AS v(q)
+                        WHERE strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(v.q, 'Ёё', 'Ее'))) > 0))
        AND (p_cursor_date IS NULL OR (o."date", o.uuid) < (p_cursor_date, p_cursor_uuid))
      ORDER BY o."date" DESC, o.uuid DESC
      LIMIT p_limit;
 $$;
 
-COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) IS
-    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, исключённые категории, кошельки, kind, подстрока комментария q) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграции 000027, 000030.';
+COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[]) IS
+    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, исключённые категории, кошельки, kind, подстрока комментария q или любой из вариантов p_qs) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграции 000027, 000030, 000032.';
