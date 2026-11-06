@@ -1,6 +1,6 @@
 -- Итог ленты операций (wallet-report /api/reports/operations с фильтрами,
 -- change add-operations-filter-functions) — по ТЕМ ЖЕ условиям, что
--- f_operations_for_period (категории, исключённые категории — 000030, кошельки, kind, q; см. её шапку), но за
+-- f_operations_for_period (категории, исключённые категории — 000030, кошельки, kind, q, варианты q — 000032; см. её шапку), но за
 -- весь период: курсор и лимит итог не учитывает. Смысл и результаты — спека
 -- wallet-report operations-list.
 --
@@ -25,7 +25,7 @@
 -- wallet-report (итог = сумма по всем страницам).
 --
 -- Источник истины — миграции wallet-api/migrations/000027_operations_filters.up.sql
--- и 000030_category_month_analytics.up.sql; этот файл — их читаемое зеркало.
+-- 000030_category_month_analytics.up.sql и 000032_operations_text_variants.up.sql; этот файл — их читаемое зеркало.
 CREATE FUNCTION f_operations_total(
     p_ledger_id              uuid,
     p_from                   timestamp,
@@ -35,7 +35,8 @@ CREATE FUNCTION f_operations_total(
     p_wallet_uuids           uuid[] DEFAULT NULL,
     p_kind                   text   DEFAULT NULL,
     p_q                      text   DEFAULT NULL,
-    p_exclude_category_uuids uuid[] DEFAULT NULL
+    p_exclude_category_uuids uuid[] DEFAULT NULL,
+    p_qs                     text[] DEFAULT NULL
 ) RETURNS TABLE (
     total_eq   numeric,
     incomplete boolean,
@@ -70,6 +71,9 @@ AS $$
                         ELSE                                                        'income' END = p_kind)
            AND (p_q IS NULL
                 OR strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(p_q, 'Ёё', 'Ее'))) > 0)
+           AND (p_qs IS NULL
+                OR EXISTS (SELECT 1 FROM unnest(p_qs) AS v(q)
+                            WHERE strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(v.q, 'Ёё', 'Ее'))) > 0))
     )
     SELECT COALESCE(sum(CASE WHEN p_kind IS NOT NULL THEN m.amount_eq
                              WHEN m.kind = 'income'  THEN m.amount_eq
@@ -80,5 +84,5 @@ AS $$
       FROM m;
 $$;
 
-COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[]) IS
-    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграции 000027, 000030.';
+COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[]) IS
+    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграции 000027, 000030, 000032.';
