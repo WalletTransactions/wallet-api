@@ -38,7 +38,7 @@
 ## 5. Интеграция с парными changes
 
 - [x] 5.1 Прогнать интеграционные тесты wallet-report из парного change `capital-assets` против базы с этой миграцией. Проверка: зелёный прогон `wallet-report/tests_integration`.
-- [ ] 5.2 Выкат на test (`env-deploy`) раньше Android-версии с активами; ручной push актива и переоценки с тестового устройства. Проверка: на test `GET /api/reports/*` показывает актив отдельно, доход/расход не изменились.
+- [ ] 5.2 Выкат на test (`env-deploy`) раньше Android-версии с активами; ручной push актива и переоценки с тестового устройства. Проверка: на test `GET /api/reports/*` показывает актив отдельно, доход/расход не изменились. — Тест: [android-wallet#33](https://github.com/WalletTransactions/android-wallet/issues/33)
 
 ## Workflow follow-up
 
