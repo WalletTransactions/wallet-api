@@ -33,7 +33,10 @@
 -- удаления и выбить её из логики разновалютных переводов.
 --
 -- Значения совпадают с AccountItem.SystemKind на клиенте: 0 = обычный
--- счёт/категория (по умолчанию), 1 = Transfer, 2 = Transfer commission.
+-- счёт/категория (по умолчанию), 1 = Transfer, 2 = Transfer commission,
+-- 3 = Revaluation («Переоценка», capital-assets, 000033): проводки между ней
+-- и активом отчётные функции считают переоценкой, а не доходом/расходом —
+-- в том числе у мягко удалённой категории.
 -- smallint, а не boolean — множество системных ролей уже сейчас не бинарное
 -- (две разные роли), и это тот же приём, что icon.icon_type.
 --
@@ -69,7 +72,7 @@ CREATE TABLE account (
     -- ограничение снято из-за унаследованных мусорных значений в реальных
     -- данных (см. icon.sql), здесь колонка новая и без такого прошлого —
     -- ничто не мешает сразу закрыть набор значений.
-    system_kind smallint NOT NULL DEFAULT 0 CHECK (system_kind IN (0, 1, 2)),
+    system_kind smallint NOT NULL DEFAULT 0 CHECK (system_kind IN (0, 1, 2, 3)),
     kind        smallint NOT NULL DEFAULT 0 CHECK (kind IN (0, 1)),
 
     CONSTRAINT pk_account PRIMARY KEY (ledger_id, uuid)
@@ -110,6 +113,6 @@ COMMENT ON COLUMN account.icon_uuid IS 'Иконка счёта/категори
 COMMENT ON COLUMN account.is_archived IS
     'Признак только для интерфейса — архивный счёт участвует в расчётах наравне с остальными, иначе архивация молча меняла бы итоги за прошлые периоды.';
 COMMENT ON COLUMN account.system_kind IS
-    'Явный признак системной категории вместо распознавания по name: 0 = обычная, 1 = Transfer, 2 = Transfer commission (см. AccountItem.SystemKind на клиенте).';
+    'Явный признак системной категории вместо распознавания по name: 0 = обычная, 1 = Transfer, 2 = Transfer commission, 3 = Revaluation — переоценка капитального актива, миграция 000033 (см. AccountItem.SystemKind на клиенте).';
 COMMENT ON COLUMN account.kind IS
     'Явный признак «кошелёк или категория»: 0 = категория, 1 = кошелёк (см. AccountItem.Kind на клиенте). Дублирует наличие строки в account_operating, проставляется один раз при создании и дальше не меняется.';

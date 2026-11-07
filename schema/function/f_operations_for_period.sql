@@ -88,8 +88,14 @@
 -- wallet-api/migrations/000007_operations.up.sql и
 -- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql,
 -- 000030_category_month_analytics.up.sql,
--- 000032_operations_text_variants.up.sql (см. ../../README.md про этот
--- принцип); этот файл — читаемое зеркало ТЕКУЩЕГО состояния (после всех).
+-- 000032_operations_text_variants.up.sql, 000033_capital_assets.up.sql (см.
+-- ../../README.md про этот принцип); этот файл — читаемое зеркало ТЕКУЩЕГО
+-- состояния (после всех).
+--
+-- kind = 'revaluation' (000033, capital-assets) — первая ветка CASE: одна из
+-- сторон проводки — счёт с system_kind = 3 («Переоценка»), без фильтра
+-- deleted_at. Категория — «Переоценка», кошелёк — актив, как у
+-- дохода/расхода. См. README.md, «Переоценка».
 CREATE FUNCTION f_operations_for_period(
     p_ledger_id              uuid,
     p_from                   timestamp,
@@ -130,7 +136,11 @@ CREATE FUNCTION f_operations_for_period(
 AS $$
     SELECT o.uuid,
            o."date",
-           CASE WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
+           CASE WHEN EXISTS (SELECT 1 FROM account r
+                             WHERE r.ledger_id = p_ledger_id
+                               AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                               AND r.system_kind = 3)                    THEN 'revaluation'
+                WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                 WHEN o.acc_from_is_operating                           THEN 'expense'
                 ELSE                                                        'income' END,
            round(o.amount, cur."precision"),
@@ -172,7 +182,11 @@ AS $$
             OR (o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_wallet_uuids))
             OR (o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_wallet_uuids)))
        AND (p_kind IS NULL
-            OR CASE WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
+            OR CASE WHEN EXISTS (SELECT 1 FROM account r
+                                 WHERE r.ledger_id = p_ledger_id
+                                   AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                                   AND r.system_kind = 3)                    THEN 'revaluation'
+                    WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                     WHEN o.acc_from_is_operating                           THEN 'expense'
                     ELSE                                                        'income' END = p_kind)
        AND (p_q IS NULL

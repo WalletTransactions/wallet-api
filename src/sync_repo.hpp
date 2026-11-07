@@ -1,6 +1,6 @@
 // Протокол синка (org/docs/TODO_mobile_sync.md, Фаза 2, п. 5) — push/pull по
 // всем синхронизируемым таблицам домена (wallet-api/schema/table/), выведенным
-// через ОДНО табличное описание (TableSpec), а не девятью написанными вручную
+// через ОДНО табличное описание (TableSpec), а не десятью написанными вручную
 // функциями: все эти таблицы устроены одинаково (uuid/ledger_id/seq/
 // deleted_at/updated_at/updated_by + бизнес-колонки, см.
 // wallet-api/schema/table/README.md, "Общий набор колонок") — разница только в
@@ -144,6 +144,11 @@ const std::vector<TableSpec>& push_tables();
 // push/pull в остальном коде (sync.cpp, тесты), а не потому что множества
 // сейчас разные.
 const std::vector<TableSpec>& pull_tables();
+
+// Порядок ПРИМЕНЕНИЯ push-батча: таблица идёт после всех, на которые
+// ссылается (см. kApplyOrder в sync_repo.cpp). Наружу — ради юнит-теста
+// порядка; совпадает с TABLE_ORDER Android SyncEngine.
+const std::vector<std::string>& apply_order();
 
 struct Conflict {
     std::string table;

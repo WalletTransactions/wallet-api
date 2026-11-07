@@ -154,11 +154,37 @@ TEST(only_amount_and_rate_tables_have_numeric_columns) {
 }
 
 TEST(ledger_data_tables_have_ledger_only_scope) {
-    for (const char* name : {"account", "account_operating", "operation", "operation_link"}) {
+    for (const char* name : {"account", "account_operating", "account_asset", "operation", "operation_link"}) {
         const TableSpec* t = find(push_tables(), name);
         REQUIRE(t != nullptr);
         CHECK(t->scope == Scope::LedgerOnly);
     }
+}
+
+TEST(account_asset_requires_all_business_columns) {
+    // design D2 capital-assets: все три поля обязательны (нет optional_columns).
+    const TableSpec* t = find(push_tables(), "account_asset");
+    REQUIRE(t != nullptr);
+    CHECK(t->columns == std::vector<std::string>({"asset_type", "include_in_net_worth", "comment"}));
+    CHECK(t->optional_columns.empty());
+    CHECK(t->numeric_columns.empty());
+}
+
+TEST(apply_order_covers_push_tables_and_puts_parents_first) {
+    const auto& order = sync_repo::apply_order();
+    std::set<std::string> ordered(order.begin(), order.end());
+    std::set<std::string> pushed;
+    for (const auto& t : push_tables()) pushed.insert(t.name);
+    CHECK(ordered == pushed);
+    CHECK_EQ(ordered.size(), order.size());
+
+    auto pos = [&](const std::string& name) { return std::find(order.begin(), order.end(), name) - order.begin(); };
+    // Ссылающаяся таблица применяется после той, на которую ссылается —
+    // иначе батч «новый кошелёк-актив» упал бы на 23503.
+    for (const auto& ref : sync_repo::sync_table_refs()) {
+        CHECK(pos(ref.parent) < pos(ref.child));
+    }
+    CHECK_EQ(pos("account_asset"), pos("account_operating") + 1);
 }
 
 TEST(reference_tables_have_reference_or_ledger_scope) {

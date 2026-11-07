@@ -50,6 +50,13 @@ AS $$
             AND o.to_currency_uuid = p_eq_currency
             AND o."date" BETWEEN p_from AND p_to
             AND o.acc_from_is_operating <> o.acc_to_is_operating -- расход ИЛИ доход, не перевод кошелёк-кошелёк
+            -- Переоценка актива — ни доход, ни расход (capital-assets, 000033).
+            AND NOT EXISTS (
+                    SELECT 1 FROM account r
+                     WHERE r.ledger_id = p_ledger_id
+                       AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                       AND r.system_kind = 3
+                )
      GROUP BY months.month_start
      ORDER BY months.month_start;
 $$;

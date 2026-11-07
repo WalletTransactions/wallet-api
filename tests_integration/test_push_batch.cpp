@@ -990,3 +990,214 @@ TEST(pull_after_cursor_returns_flag_cleared_on_other_device) {
     REQUIRE(pulled.has_value());
     CHECK(pulled->at("show_in_equivalent") == json(false));
 }
+
+// ---- capital-assets: account_asset и категория «Переоценка» -------------
+// Сценарии specs/capital-assets и specs/sync-push change capital-assets.
+
+namespace {
+
+json make_asset_row(const std::string& uuid, int asset_type, bool include_in_net_worth = true) {
+    return json{{"uuid", uuid},
+                {"asset_type", asset_type},
+                {"include_in_net_worth", include_in_net_worth},
+                {"comment", "integration test asset"}};
+}
+
+// Батч «новый кошелёк-актив»: account + account_operating + account_asset.
+// Ключи changes — std::map, отдаются алфавитно (account, account_asset,
+// account_operating) — проверяем заодно, что порядок применения берётся из
+// kApplyOrder, а не из итерации.
+json new_asset_batch(const std::string& wallet_uuid, const std::string& icon_uuid,
+                     const std::string& currency_uuid, int asset_type) {
+    json account = make_account_row(wallet_uuid, icon_uuid, "Asset " + wallet_uuid);
+    account["kind"] = 1;
+    return {{"account", json::array({account})},
+            {"account_asset", json::array({make_asset_row(wallet_uuid, asset_type)})},
+            {"account_operating",
+             json::array({json{{"uuid", wallet_uuid}, {"currency_uuid", currency_uuid}}})}};
+}
+
+bool account_row_exists(db::Database& db, const std::string& ledger_id, const std::string& uuid) {
+    return !db.exec("SELECT 1 FROM account WHERE ledger_id = $1 AND uuid = $2", {ledger_id, uuid}).rows.empty();
+}
+
+std::string view_asset_type(db::Database& db, const std::string& ledger_id, const std::string& uuid) {
+    auto res = db.exec("SELECT coalesce(asset_type::text, 'NULL') FROM v_account_operating "
+                       "WHERE ledger_id = $1 AND uuid = $2",
+                       {ledger_id, uuid});
+    return res.rows.empty() ? std::string("absent") : res.rows.at(0).fields.at(0);
+}
+
+} // namespace
+
+TEST(push_new_asset_in_one_batch_marks_wallet_as_asset) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                       new_asset_batch(wallet, icon_uuid, currency_uuid, 1));
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("1"));
+}
+
+TEST(push_asset_on_category_is_missing_reference_and_rolls_back) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string category = uuidgen::v4();
+
+    json changes = {
+        {"account", json::array({make_account_row(category, icon_uuid, "Category " + category)})},
+        {"account_asset", json::array({make_asset_row(category, 1)})},
+    };
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    CHECK_EQ(outcome.http_status, 409);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("missing_reference"));
+    // Батч целиком откачен — и категория тоже не создана.
+    CHECK(!account_row_exists(*db, identity.ledger_id, category));
+}
+
+TEST(push_asset_without_include_in_net_worth_is_invalid_row_naming_field) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+
+    json changes = new_asset_batch(wallet, icon_uuid, currency_uuid, 1);
+    changes["account_asset"][0].erase("include_in_net_worth");
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    CHECK_EQ(outcome.http_status, 400);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("invalid_row"));
+    CHECK(body.value("detail", std::string{}).find("include_in_net_worth") != std::string::npos);
+    CHECK(!account_row_exists(*db, identity.ledger_id, wallet));
+}
+
+TEST(push_values_outside_closed_sets_are_invalid_row_not_500) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+
+    // account_asset.asset_type = 4 — нарушение CHECK (23514), раньше уходило в 500.
+    std::string wallet = uuidgen::v4();
+    auto bad_asset = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                         new_asset_batch(wallet, icon_uuid, currency_uuid, 4));
+    CHECK_EQ(bad_asset.http_status, 400);
+    json body = json::parse(bad_asset.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("invalid_row"));
+    CHECK(body.value("detail", std::string{}).find("account_asset_asset_type_check") != std::string::npos);
+    CHECK(!account_row_exists(*db, identity.ledger_id, wallet));
+
+    // account.system_kind = 9.
+    std::string category = uuidgen::v4();
+    json account = make_account_row(category, icon_uuid, "Bad kind " + category);
+    account["system_kind"] = 9;
+    auto bad_kind = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                        {{"account", json::array({account})}});
+    CHECK_EQ(bad_kind.http_status, 400);
+    CHECK_EQ(json::parse(bad_kind.response_body).value("error", std::string{}), std::string("invalid_row"));
+}
+
+TEST(push_revaluation_category_with_system_kind_3_is_stored) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string category = uuidgen::v4();
+    json account = make_account_row(category, icon_uuid, "Переоценка " + category);
+    account["system_kind"] = 3;
+
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                       {{"account", json::array({account})}});
+    CHECK_EQ(outcome.http_status, 200);
+    auto res = db->exec("SELECT system_kind FROM account WHERE ledger_id = $1 AND uuid = $2",
+                        {identity.ledger_id, category});
+    REQUIRE(res.rows.size() == 1);
+    CHECK_EQ(res.rows.at(0).fields.at(0), std::string("3"));
+}
+
+TEST(soft_deleted_asset_row_returns_wallet_to_liquid_and_pulls_with_deleted_at) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+    std::string category = uuidgen::v4();
+
+    auto first = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                     new_asset_batch(wallet, icon_uuid, currency_uuid, 2));
+    REQUIRE(first.http_status == 200);
+    // Операция на актив — снятие признака не должно её трогать.
+    json op_batch = {
+        {"account", json::array({make_account_row(category, icon_uuid, "Cat " + category)})},
+        {"operation", json::array({json{{"uuid", uuidgen::v4()},
+                                         {"date", "2026-09-04T12:00:00"},
+                                         {"acc_fr_uuid", category},
+                                         {"acc_to_uuid", wallet},
+                                         {"amount", "1500.00"},
+                                         {"comment", ""}}})}};
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), op_batch)
+                .http_status == 200);
+
+    // Второе устройство со старым курсором узнаёт об активе из pull.
+    auto pulled = sync_repo::pull_ledger_stream(*db, identity.ledger_id, /*cursor=*/0, /*limit=*/1000);
+    REQUIRE(pulled.changes.contains("account_asset"));
+    std::optional<json> live;
+    for (const auto& row : pulled.changes.at("account_asset")) {
+        if (row.at("uuid").get<std::string>() == wallet) live = row;
+    }
+    REQUIRE(live.has_value());
+    CHECK(live->at("asset_type") == json(2));
+    CHECK(live->at("include_in_net_worth") == json(true));
+    CHECK(live->at("comment") == json("integration test asset"));
+    CHECK(live->at("deleted_at").is_null());
+    int64_t cursor = pulled.next_seq;
+
+    json tombstone = make_asset_row(wallet, 2);
+    tombstone["deleted"] = true;
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                               {{"account_asset", json::array({tombstone})}})
+                .http_status == 200);
+    CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("NULL"));
+    auto ops = db->exec("SELECT count(*) FROM operation WHERE ledger_id = $1 AND acc_to_uuid = $2 "
+                        "AND deleted_at IS NULL",
+                        {identity.ledger_id, wallet});
+    CHECK_EQ(ops.rows.at(0).fields.at(0), std::string("1"));
+
+    auto after = sync_repo::pull_ledger_stream(*db, identity.ledger_id, cursor, 1000);
+    REQUIRE(after.changes.contains("account_asset"));
+    bool seen_deleted = false;
+    for (const auto& row : after.changes.at("account_asset")) {
+        if (row.at("uuid").get<std::string>() == wallet) seen_deleted = !row.at("deleted_at").is_null();
+    }
+    CHECK(seen_deleted);
+}
+
+TEST(old_client_batch_without_account_asset_is_accepted_as_before) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+    std::string category = uuidgen::v4();
+    json wallet_row = make_account_row(wallet, icon_uuid, "Old wallet " + wallet);
+    wallet_row["kind"] = 1;
+
+    json changes = {
+        {"account", json::array({wallet_row, make_account_row(category, icon_uuid, "Old cat " + category)})},
+        {"account_operating", json::array({json{{"uuid", wallet}, {"currency_uuid", currency_uuid}}})},
+        {"operation", json::array({json{{"uuid", uuidgen::v4()},
+                                         {"date", "2026-09-04T12:00:00"},
+                                         {"acc_fr_uuid", wallet},
+                                         {"acc_to_uuid", category},
+                                         {"amount", "10.00"},
+                                         {"comment", ""}}})}};
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("NULL"));
+}

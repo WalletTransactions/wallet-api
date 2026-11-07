@@ -145,9 +145,10 @@ success-странице после логина; см. его README. Полн�
 
 Протокол офлайн-first синка Android-клиента (org/docs/TODO_mobile_sync.md,
 Фаза 2) — домен из `wallet-api/schema/table/` (`account`, `account_operating`,
-`operation`, `operation_link`, `currency`, `currency_pair`,
+`account_asset`, `operation`, `operation_link`, `currency`, `currency_pair`,
 `currency_pair_rate`, `currency_conversion`, `icon`), накатан миграцией
-`wallet-api/migrations/000002_ledger_sync.up.sql`.
+`wallet-api/migrations/000002_ledger_sync.up.sql` (`account_asset` —
+`000033_capital_assets`, признак капитального актива у кошелька).
 
 **Только для мобильного входа.** Оба эндпоинта требуют, чтобы токен нёс
 claim `device_id` (см. README google-auth, "Детали устройства") — у токена
@@ -192,6 +193,15 @@ claim `device_id` (см. README google-auth, "Детали устройства"
 - Мягкое удаление — не отдельный метод, а поле `"deleted": true` в самой
   строке; сервер сам проставляет `deleted_at = now()` (не то, что мог бы
   прислать клиент — эта колонка только для диагностики).
+- Порядок применения таблиц батча — не порядок ключей в JSON, а
+  `sync_repo::apply_order()`: `icon`, `currency`, `currency_pair`,
+  `currency_pair_rate`, `currency_conversion`, `account`,
+  `account_operating`, `account_asset`, `operation`, `operation_link` —
+  каждая после тех, на которые ссылается (тот же порядок, что `TABLE_ORDER`
+  Android `SyncEngine`).
+- Значение вне закрытого набора (`account.system_kind` вне 0–3,
+  `account_asset.asset_type` вне 1–3 — нарушение CHECK, `23514`) — `400
+  invalid_row`, как и отсутствующее обязательное поле, не `500`.
 - Вся `changes` — **одна транзакция** (`db::Database::Transaction`, см.
   `db.hpp`): либо применяется целиком, либо не применяется вовсе — важно для
   `operation_link` (обе ноги разновалютного перевода должны доехать вместе).
@@ -408,7 +418,7 @@ org/docs/TODO_mobile_sync.md, Фаза 6. `ledger_id` нигде не прини
    больше в `ledger_member`), удаляются целиком: `DELETE FROM ledger`
    каскадом (`ON DELETE CASCADE`, см. `wallet-api/schema/table/*.sql`) сносит
    `ledger_member`/`ledger_invite`/`device`/`account`/`account_operating`/
-   `operation`/`operation_link`/`sync_push_batch`/`currency`/
+   `account_asset`/`operation`/`operation_link`/`sync_push_batch`/`currency`/
    `currency_pair`/`currency_pair_rate` этого леджера — один каскад, не
    десяток ручных `DELETE` в правильном порядке. Следом — `DELETE FROM
    change_stream` (`ledger.id REFERENCES change_stream ON DELETE RESTRICT` —

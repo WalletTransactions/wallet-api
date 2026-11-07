@@ -25,7 +25,9 @@
 -- wallet-report (итог = сумма по всем страницам).
 --
 -- Источник истины — миграции wallet-api/migrations/000027_operations_filters.up.sql
--- 000030_category_month_analytics.up.sql и 000032_operations_text_variants.up.sql; этот файл — их читаемое зеркало.
+-- 000030_category_month_analytics.up.sql, 000032_operations_text_variants.up.sql
+-- и 000033_capital_assets.up.sql (kind = 'revaluation': с p_kind — в сумме,
+-- без p_kind — 0 в сальдо, ветка ELSE); этот файл — их читаемое зеркало.
 CREATE FUNCTION f_operations_total(
     p_ledger_id              uuid,
     p_from                   timestamp,
@@ -47,7 +49,11 @@ CREATE FUNCTION f_operations_total(
     PARALLEL SAFE
 AS $$
     WITH m AS (
-        SELECT CASE WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
+        SELECT CASE WHEN EXISTS (SELECT 1 FROM account r
+                                 WHERE r.ledger_id = p_ledger_id
+                                   AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                                   AND r.system_kind = 3)                    THEN 'revaluation'
+                    WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                     WHEN o.acc_from_is_operating                           THEN 'expense'
                     ELSE                                                        'income' END AS kind,
                o.amount_eq
@@ -66,7 +72,11 @@ AS $$
                 OR (o.acc_from_is_operating AND o.acc_fr_uuid = ANY (p_wallet_uuids))
                 OR (o.acc_to_is_operating   AND o.acc_to_uuid = ANY (p_wallet_uuids)))
            AND (p_kind IS NULL
-                OR CASE WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
+                OR CASE WHEN EXISTS (SELECT 1 FROM account r
+                                     WHERE r.ledger_id = p_ledger_id
+                                       AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                                       AND r.system_kind = 3)                    THEN 'revaluation'
+                        WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                         WHEN o.acc_from_is_operating                           THEN 'expense'
                         ELSE                                                        'income' END = p_kind)
            AND (p_q IS NULL

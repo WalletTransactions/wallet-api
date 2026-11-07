@@ -7,8 +7,8 @@
 ## Общий набор колонок синхронизируемой таблицы
 
 Есть у `icon`, `currency`, `currency_pair`, `currency_pair_rate`,
-`currency_conversion`, `account`, `account_operating`, `operation`,
-`operation_link` — и ни у одной из служебных.
+`currency_conversion`, `account`, `account_operating`, `account_asset`,
+`operation`, `operation_link` — и ни у одной из служебных.
 
 | Поле | Тип | Описание |
 | --- | --- | --- |
@@ -21,8 +21,8 @@
 
 Первичный ключ различается по области видимости:
 
-- **таблицы данных леджера** (`account`, `account_operating`, `operation`,
-  `operation_link`) — составной `(ledger_id, uuid)`. Он же цель составных внешних
+- **таблицы данных леджера** (`account`, `account_operating`, `account_asset`,
+  `operation`, `operation_link`) — составной `(ledger_id, uuid)`. Он же цель составных внешних
   ключей, он же условие для будущего секционирования по `ledger_id`: PostgreSQL
   требует, чтобы ключ секционирования входил в каждое уникальное ограничение, и
   одиночный `uuid` закрыл бы эту дверь навсегда. Плата — `uuid` уникален в
@@ -295,7 +295,7 @@ DEFERRED`). Одиночный `DELETE` используемой строки п
 | `comment` | text NOT NULL DEFAULT `''` | |
 | `icon_uuid` | uuid NOT NULL → `icon.uuid` | |
 | `is_archived` | boolean NOT NULL DEFAULT false | Вместо клиентского `INT DEFAULT 0`. Признак только для интерфейса: в расчётах архивный счёт участвует наравне с остальными, иначе архивация молча меняла бы итоги за прошлые периоды |
-| `system_kind` | smallint NOT NULL DEFAULT 0, `CHECK IN (0,1,2)` | Явный признак системной категории вместо распознавания по `name` (обсуждение 2026-09-09): 0 = обычная, 1 = `Transfer`, 2 = `Transfer commission` — см. `AccountItem.SystemKind` на клиенте |
+| `system_kind` | smallint NOT NULL DEFAULT 0, `CHECK IN (0,1,2,3)` | Явный признак системной категории вместо распознавания по `name` (обсуждение 2026-09-09): 0 = обычная, 1 = `Transfer`, 2 = `Transfer commission`, 3 = «Переоценка» (`Revaluation`, миграция 000033, см. `account_asset`) — см. `AccountItem.SystemKind` на клиенте |
 | `kind` | smallint NOT NULL DEFAULT 0, `CHECK IN (0,1)` | Явный признак «кошелёк или категория» (обсуждение 2026-09-09), тем же приёмом, что `system_kind`: 0 = категория, 1 = кошелёк — см. `AccountItem.Kind` на клиенте. Дублирует наличие строки в `account_operating`, проставляется один раз при создании строки и дальше не меняется |
 
 Первичный ключ `pk_account (ledger_id, uuid)` — цель составных внешних ключей из
@@ -334,6 +334,35 @@ DEFERRED`). Одиночный `DELETE` используемой строки п
 
 У категории своей валюты нет и быть не может: валюта операции по категории
 определяется второй стороной проводки, то есть кошельком.
+
+## `account_asset`
+
+Расширение кошелька — признак капитального актива (квартира, машина, прочее
+имущество; change `capital-assets`, миграция 000033). Живая строка — кошелёк
+считается активом, мягкое удаление возвращает его в ликвидные, не трогая
+операций и баланса. `uuid` всегда равен `account_operating.uuid`.
+
+| Поле | Тип | Описание |
+| --- | --- | --- |
+| `uuid` | uuid PK | Берётся у кошелька |
+| `asset_type` | smallint NOT NULL, `CHECK IN (1,2,3)` | 1 = недвижимость, 2 = авто, 3 = прочее |
+| `include_in_net_worth` | boolean NOT NULL DEFAULT true | Входит ли оценка в итог «всего с капиталом» |
+| `comment` | text NOT NULL DEFAULT `''` | Свободный комментарий к активу |
+
+Все три бизнес-колонки обязательны в push; значение вне набора — `400
+invalid_row` (нарушение CHECK, `23514`).
+
+Внешний ключ `(ledger_id, uuid) → account_operating (ledger_id, uuid) ON DELETE
+CASCADE`, а не на `account`: «актив только у кошелька» держит схема — строка на
+категории даёт `409 missing_reference`. Живость FK не проверяет; активом отчёты
+считают кошелёк, у которого живы `account`, `account_operating` и
+`account_asset` (`v_account_operating`).
+
+Оценка актива — его обычный остаток. Вложение — перевод в актив (кошелёк →
+актив, либо разновалютно через `Transfer`), переоценка — проводка между
+активом и категорией `system_kind = 3`: к активу — рост оценки, от актива —
+снижение. Доход/расход и обороты такие проводки не учитывают, лента отдаёт
+им `kind = 'revaluation'` (см. `../function/README.md`, «Переоценка»).
 
 ## `operation`
 
