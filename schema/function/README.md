@@ -1,12 +1,12 @@
 # Функции
 
-Две служебные — про честность колонок `seq` и `updated_at` — и двенадцать
+Две служебные — про честность колонок `seq` и `updated_at` — и тринадцать
 отчётных: три порт именованных запросов из
-[`../../client/select`](https://github.com/WalletTransactions/android-wallet/tree/main/schema/select), плюс девять веб-only агрегаций
+[`../../client/select`](https://github.com/WalletTransactions/android-wallet/tree/main/schema/select), плюс десять веб-only агрегаций
 (`f_expanse_by_category_for_period`, `f_expense_by_category_by_month`, `f_income_expense_by_month`,
 `f_expense_by_weekday_for_period`, `f_operations_for_period`,
 `f_operations_total`, `f_wallet_turnover_for_period`, `f_balance_to_dates`,
-`f_balance_series`) —
+`f_balance_series`, `f_assets_for_period`) —
 см. ниже.
 
 ## Отчётные
@@ -18,7 +18,7 @@
 
 | Функция | Параметры | Возвращает |
 | --- | --- | --- |
-| `f_balance_to_date` | `p_ledger_id`, `p_date`, `p_eq_currency` | строку на кошелёк: баланс в своей валюте и в эквиваленте |
+| `f_balance_to_date` | `p_ledger_id`, `p_date`, `p_eq_currency` | строку на кошелёк: баланс в своей валюте и в эквиваленте, в конце — `asset_type`/`include_in_net_worth` (признак актива из `v_account_operating`, `NULL` у ликвидного, 000033; так же у `f_balance_to_dates` и `f_balance_series`, в пустом бакете — `NULL`) |
 | `f_income_for_period` | `p_ledger_id`, `p_from`, `p_to`, `p_eq_currency` | доход с разбивкой по счёту-источнику. Ноги валютного перевода через категорию `Transfer` в разбивку не попадают гросс-суммой (обсуждение 2026-09-09, android-wallet/docs/TODO_transfers.md, п.3) — их net (credit минус debit, обычно спред перевода) добавлен одной строкой на счёте `Transfer`, если он положительный |
 | `f_expanse_for_period` | те же | расход с разбивкой по (счёту-получателю, валюте операции). Симметрично: net ног перевода, если отрицательный, — одной строкой на `Transfer` |
 | `f_expanse_by_category_for_period` | те же | расход с разбивкой ТОЛЬКО по категории — валюты уже смешаны через `amount_eq`, "своя" сумма не возвращается, плюс `icon_sha256` (hex `content_sha256` иконки категории, `account.icon_uuid` NOT NULL — есть всегда). Не порт клиента — нужна только экрану "Структура расходов" (`GET /api/reports/expense-structure`), где категория, оплаченная в двух валютах кошелька, обязана стать одной строкой (иначе её доля молча разъедется на две меньшие). Ноги кросс-валютного перевода сведены в одну строку `Transfer` с net (000022); `op_count` — число операций в сумме строки, у `Transfer` — число переводов (000030) |
@@ -29,17 +29,53 @@
 | `f_operations_total` | `p_ledger_id`, `p_from`, `p_to`, `p_eq_currency` + те же фильтры (`p_category_uuids`, `p_wallet_uuids`, `p_kind`, `p_q`, `p_exclude_category_uuids`, именованно) | ровно одна строка `total_eq`/`incomplete`/`matched` по тем же условиям за весь период (без курсора и лимита). Знак: `p_kind` задан — неотрицательная сумма `amount_eq`; не задан — сальдо `Σ income − Σ expense`, прямые переводы кошелёк → кошелёк дают 0, ноги разновалютного перевода через `Transfer` взаимно гасятся. Операции без курса к `p_eq_currency` в сумму не входят и дают `incomplete = true`. Пустой результат — `0 / false / 0`. Условия — копия ленты (не вложенная функция: её инлайнинг не гарантирован, а лента без него теряет диапазонный скан `ix_operation_date`); согласованность — тест wallet-report (итог = сумма страниц). Миграции 000027, 000030 |
 | `f_wallet_turnover_for_period` | `p_ledger_id`, `p_from`, `p_to`, `p_eq_currency` | оборот КАЖДОГО кошелька леджера за период, и в его собственной валюте, и в эквиваленте: `turnover_in`/`turnover_out` (своя валюта) и `turnover_in_eq`/`turnover_out_eq` (эквивалент, нужен для сортировки экрана — суммы разных валют иначе несравнимы) считают ЛЮБОЕ движение по кошельку (включая переводы кошелёк-кошелёк, не только обмен со статьёй, как у `f_income_for_period`/`f_expanse_for_period`), плюс `comment`/`is_archived`/`icon_sha256` для самой карточки кошелька и `incomplete` (не нашёлся курс хотя бы у одной операции любого направления). Возвращает ВСЕ кошельки леджера, а не только тронутые в периоде (zero-fill, как и у помесячных функций, но без `generate_series` — просто `LEFT JOIN`). Не порт клиента — нужна только экрану "Кошельки и остатки"; остатки на начало/конец периода эта функция не считает вовсе — экран берёт их из `f_balance_to_dates` ниже |
 | `f_balance_to_dates` | `p_ledger_id`, `p_dates` (`timestamp[]`), `p_eq_currency` | баланс каждого кошелька леджера сразу на НЕСКОЛЬКО дат (по прямому запросу — "отдавать балком за период для нескольких кошельков": экран балансов делал до 14 отдельных вызовов `f_balance_to_date`, "Обзор" — ещё 12, на один показ). Та же формула, что и `f_balance_to_date` (обороты строго ДО даты), но `unnest(p_dates) WITH ORDINALITY` вместо одной даты; `date_index` — 1-based позиция даты во входном массиве, вызывающий код группирует по НЕЙ, не по тексту даты (Postgres нормализует её при выводе). Даты без единого кошелька в результат не попадают вовсе — восстановление полного списка (ровно один блок на каждую дату, включая пустые) лежит на вызывающем коде |
+| `f_assets_for_period` | `p_ledger_id`, `p_from`, `p_to`, `p_eq_currency` | отчёт «Капитал» (000033): строка на каждый живой актив леджера (включая проданные и архивные) — `value` (остаток на `p_to` включительно), `revaluation_total`/`revaluation_period` (переоценка накопленная и за период), `invested = value − revaluation_total`, `return_pct` (`NULL` при `invested <= 0`) и те же суммы `*_eq` по одному курсу на `p_to`. См. «Переоценка» ниже. `GET /api/reports/assets` |
 | `f_balance_series` | `p_ledger_id`, `p_from`, `p_to` (`date`), `p_step` (`text`: `day`/`week`/`month`/`year`), `p_eq_currency` | то же самое, что и `f_balance_to_dates`, но список дат-границ бакетов сервер строит САМ из `p_from`/`p_to`/`p_step` (по прямому запросу, 2026-09-11 — "новое API с шагом, а не вызов с миллионом параметров в GET": клиентский список дат при широком периоде с группировкой по дням/неделям разрастался до сотен элементов и упирался в лимит длины URI на гейтвее). Бакеты выровнены по календарю (день — сам `p_from`; неделя — понедельник ISO-недели; месяц — 1-е число; год — 1 января), последний обрезан по `p_to`. `date_index` — тот же смысл, что и у `f_balance_to_dates`, но 1-based позиция БАКЕТА, не элемента входного массива; бакет без единого кошелька с движением всё равно возвращает одну строку (все account-поля `NULL`, через `LEFT JOIN` вместо `WHERE`-фильтра) — иначе вызывающий код не отличил бы "бакет есть, но пуст" от "бакета нет вовсе", не зная заранее полного списка границ |
 
-Все одиннадцать `STABLE PARALLEL SAFE` и `SECURITY INVOKER`: права проверяются по
+Все отчётные `STABLE PARALLEL SAFE` и `SECURITY INVOKER`: права проверяются по
 роли вызывающего, так что `wallet_reports` с одним лишь `SELECT` вызвать их
 сможет, а обойти через них свои ограничения — нет.
 
 `p_ledger_id` — параметр, которого в клиенте нет и быть не может: там одна база
-на пользователя. Здесь он обязателен во всех одиннадцати.
+на пользователя. Здесь он обязателен во всех отчётных.
 
 Смысл и результаты отчётных функций описывают спеки wallet-report
 (`wallet-schema-ownership`): ленты и итога — [`operations-list`](https://github.com/WalletTransactions/wallet-report/tree/main/openspec/specs/operations-list).
+
+### Переоценка (capital-assets, 000033)
+
+Проводка — переоценка капитального актива, если одна из её сторон — счёт с
+`system_kind = 3` («Переоценка»). Признак проверяется одним и тем же текстом
+во всех функциях:
+
+```sql
+NOT EXISTS (SELECT 1 FROM account r
+             WHERE r.ledger_id = p_ledger_id
+               AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+               AND r.system_kind = 3)
+```
+
+без фильтра `deleted_at`: проводки мягко удалённой «Переоценки» не должны
+задним числом стать доходом.
+
+- **Исключают** переоценку: `f_income_for_period`, `f_expanse_for_period`,
+  `f_expanse_by_category_for_period`, `f_expense_by_category_by_month`,
+  `f_income_expense_by_month`, `f_expense_by_weekday_for_period`,
+  `f_wallet_turnover_for_period` (обороты в своей валюте, в эквиваленте и
+  `incomplete`). Ветки `transfer_net` не тронуты.
+- **Помечают**: `f_operations_for_period` и `f_operations_total` — первой
+  веткой `CASE kind` отдают `'revaluation'`; категория и кошелёк в строке
+  ленты заполнены, как у дохода/расхода; фильтр `p_kind => 'revaluation'`
+  работает; сальдо без `p_kind` переоценку не считает (`ELSE 0`).
+- **Не трогают**: балансовые функции — переоценка меняет остаток актива, это
+  и есть его оценка.
+
+`f_assets_for_period` держит тождество `value = invested + revaluation_total`
+(и `value_eq = invested_eq + revaluation_total_eq` — `invested*` выводится
+вычитанием уже округлённых сумм). Граница — `date <= p_to` включительно, как
+у периодных функций; балансовые берут «строго до даты», wallet-report
+согласует это сам. Эквиваленты — по одному курсу на `p_to`, а не по курсам
+дат проводок.
 
 ### Zero-fill в помесячных/по-дням-недели функциях — не просто GROUP BY
 

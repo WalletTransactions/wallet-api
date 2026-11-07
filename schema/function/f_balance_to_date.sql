@@ -43,7 +43,11 @@ CREATE FUNCTION f_balance_to_date(
     symbol        text,
     "precision"   smallint,
     balance       numeric,
-    balance_eq    numeric
+    balance_eq    numeric,
+    -- capital-assets (000033): признак актива из v_account_operating; NULL —
+    -- ликвидный кошелёк (и пустой бакет f_balance_series).
+    asset_type           smallint,
+    include_in_net_worth boolean
 )
     LANGUAGE sql
     STABLE
@@ -57,7 +61,9 @@ AS $$
            round(coalesce(opt.amount_to, 0) - coalesce(opf.amount_fr, 0), c."precision"),
            round(r.rate * (coalesce(opt.amount_to, 0) - coalesce(opf.amount_fr, 0)),
                  (SELECT eq."precision" FROM currency eq WHERE eq.uuid = p_eq_currency))
-               AS eq_value
+               AS eq_value,
+           vao.asset_type,
+           vao.include_in_net_worth
       FROM v_account_operating vao
       JOIN currency c
         ON c.uuid = vao.currency_uuid

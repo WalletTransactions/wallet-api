@@ -78,7 +78,11 @@ CREATE FUNCTION f_balance_series(
     symbol        text,
     "precision"   smallint,
     balance       numeric,
-    balance_eq    numeric
+    balance_eq    numeric,
+    -- capital-assets (000033): признак актива из v_account_operating; NULL —
+    -- ликвидный кошелёк (и пустой бакет f_balance_series).
+    asset_type           smallint,
+    include_in_net_worth boolean
 )
     LANGUAGE sql
     STABLE
@@ -167,7 +171,9 @@ AS $$
                c."precision",
                round(r.cum, c."precision") AS balance,
                round(br.rate * r.cum,
-                     (SELECT eq."precision" FROM currency eq WHERE eq.uuid = p_eq_currency)) AS eq_value
+                     (SELECT eq."precision" FROM currency eq WHERE eq.uuid = p_eq_currency)) AS eq_value,
+               vao.asset_type,
+               vao.include_in_net_worth
           FROM running r
           JOIN v_account_operating vao ON vao.uuid = r.account_uuid
           JOIN currency c
@@ -187,7 +193,9 @@ AS $$
            ab.symbol,
            ab."precision",
            ab.balance,
-           ab.eq_value
+           ab.eq_value,
+           ab.asset_type,
+           ab.include_in_net_worth
       FROM buckets b
       LEFT JOIN acct_bal ab ON ab.idx = b.idx
      ORDER BY b.idx, ab.eq_value DESC NULLS LAST;

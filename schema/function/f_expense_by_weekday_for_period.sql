@@ -36,6 +36,13 @@ AS $$
             AND o."date" BETWEEN p_from AND p_to
             AND o.acc_from_is_operating
             AND NOT o.acc_to_is_operating
+            -- Переоценка актива — не расход (capital-assets, 000033).
+            AND NOT EXISTS (
+                    SELECT 1 FROM account r
+                     WHERE r.ledger_id = p_ledger_id
+                       AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                       AND r.system_kind = 3
+                )
      GROUP BY days.isodow
      ORDER BY days.isodow;
 $$;

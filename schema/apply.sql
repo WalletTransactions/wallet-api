@@ -51,6 +51,7 @@
 -- Данные леджера.
 \ir table/account.sql
 \ir table/account_operating.sql
+\ir table/account_asset.sql
 \ir table/operation.sql
 \ir table/operation_link.sql
 
@@ -90,6 +91,10 @@
 \ir function/f_wallet_turnover_for_period.sql
 \ir function/f_balance_to_dates.sql
 \ir function/f_balance_series.sql
+
+-- "Капитал" (000033, capital-assets) — сводка по активам, опирается на
+-- v_account_operating.asset_type.
+\ir function/f_assets_for_period.sql
 
 -- Роли — после всего остального, и порядок здесь тоже вынужденный: гранты идут
 -- по ALL TABLES IN SCHEMA и по конкретным функциям, а это списки, вычисляемые в

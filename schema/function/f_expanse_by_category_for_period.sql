@@ -88,6 +88,14 @@ AS $$
                 WHERE ol.ledger_id = p_ledger_id AND ol.main_uuid = o.uuid
                   AND ol.type = 0 AND ol.deleted_at IS NULL
            )
+       -- Переоценка актива — не расход (capital-assets, 000033): сторона с
+       -- system_kind = 3, без фильтра deleted_at.
+       AND NOT EXISTS (
+               SELECT 1 FROM account r
+                WHERE r.ledger_id = p_ledger_id
+                  AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                  AND r.system_kind = 3
+           )
      GROUP BY o.acc_to_uuid, o.acc_to_name, i.content_sha256
 
     UNION ALL

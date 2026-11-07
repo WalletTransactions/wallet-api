@@ -14,6 +14,10 @@ const std::vector<TableSpec>& push_tables() {
     static const std::vector<TableSpec> tables = {
         {"account", Scope::LedgerOnly, {"name", "comment", "icon_uuid", "is_archived", "system_kind", "kind"}},
         {"account_operating", Scope::LedgerOnly, {"currency_uuid"}},
+        // Признак капитального актива у кошелька (change capital-assets):
+        // все три колонки обязательны — таблица новая, старых клиентов, что
+        // слали бы её без поля, нет.
+        {"account_asset", Scope::LedgerOnly, {"asset_type", "include_in_net_worth", "comment"}},
         {"operation", Scope::LedgerOnly,
          {"date", "acc_fr_uuid", "acc_to_uuid", "amount", "comment"}, {"amount"}},
         {"operation_link", Scope::LedgerOnly, {"main_uuid", "link_uuid", "type"}},
@@ -67,10 +71,11 @@ const TableSpec* find_spec(const std::vector<TableSpec>& tables, const std::stri
 // "currency" алфавитно — без этого списка INSERT в account_operating ушёл
 // бы ДО currency и упал на 23503. Тот же порядок, что TABLE_ORDER на
 // Android-клиенте (SyncEngine, применяет pull симметрично) — не совпадение,
-// зависимости одни и те же в обе стороны.
+// зависимости одни и те же в обе стороны. account_asset — сразу после
+// account_operating: её FK смотрит на кошелёк, а не на account.
 constexpr const char* kApplyOrder[] = {
     "icon", "currency", "currency_pair", "currency_pair_rate", "currency_conversion",
-    "account", "account_operating", "operation", "operation_link",
+    "account", "account_operating", "account_asset", "operation", "operation_link",
 };
 
 // JSON -> текстовый параметр SQL. Суммы/курсы приходят СТРОКАМИ уже на
@@ -94,6 +99,11 @@ bool contains(const std::vector<std::string>& v, const std::string& s) {
 }
 
 } // namespace
+
+const std::vector<std::string>& apply_order() {
+    static const std::vector<std::string> order(std::begin(kApplyOrder), std::end(kApplyOrder));
+    return order;
+}
 
 // Один INSERT ... ON CONFLICT ... DO UPDATE на строку, колонки и их порядок
 // — из TableSpec. ledger_id всегда АУТЕНТИФИЦИРОВАННЫЙ (параметр функции), а
@@ -442,6 +452,16 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
             }
             return PushOutcome{409, body.dump()};
         }
+        if (e.sqlstate == "23514") {
+            // Нарушение CHECK — значение вне закрытого набора (например,
+            // account.system_kind = 9 или account_asset.asset_type = 4). Это
+            // ошибка протокола клиента, как и отсутствующее поле ниже, а не
+            // внутренняя поломка: тот же 400 invalid_row, detail называет
+            // ограничение.
+            return PushOutcome{400, json{{"error", "invalid_row"},
+                                          {"detail", "check_violation: " + e.constraint_name}}
+                                          .dump()};
+        }
         throw;
     } catch (const json::exception& e) {
         // Строка батча не несёт обязательного поля (row.at(col) в upsert_row
@@ -702,6 +722,7 @@ const std::vector<TableRef>& sync_table_refs() {
         {"account", {"icon_uuid"}, "icon", {"uuid"}},
         {"account_operating", {"ledger_id", "uuid"}, "account", {"ledger_id", "uuid"}},
         {"account_operating", {"currency_uuid"}, "currency", {"uuid"}},
+        {"account_asset", {"ledger_id", "uuid"}, "account_operating", {"ledger_id", "uuid"}},
         {"operation", {"ledger_id", "acc_fr_uuid"}, "account", {"ledger_id", "uuid"}},
         {"operation", {"ledger_id", "acc_to_uuid"}, "account", {"ledger_id", "uuid"}},
         {"operation_link", {"ledger_id", "main_uuid"}, "operation", {"ledger_id", "uuid"}},
@@ -719,7 +740,7 @@ const std::vector<TableRef>& sync_table_refs() {
 
 const std::vector<std::string>& purge_order() {
     static const std::vector<std::string> order = {
-        "operation_link", "operation",     "account_operating", "account", "currency_conversion",
+        "operation_link", "operation",     "account_asset", "account_operating", "account", "currency_conversion",
         "currency_pair_rate", "currency_pair", "currency",      "icon",
     };
     return order;

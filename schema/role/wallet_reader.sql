@@ -56,6 +56,12 @@ GRANT USAGE ON SCHEMA public TO wallet_reader;
 -- по одному было бы хуже — забытая вьюха обнаружилась бы только в рантайме.
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO wallet_reader;
 
+-- account_asset (000033, capital-assets) уже накрыта строкой выше; явный грант
+-- документирует зависимость: wallet-report сам делает LEFT JOIN account_asset
+-- в /wallet-turnover и /accounts, и право не должно зависеть от того, кем и
+-- когда создана таблица.
+GRANT SELECT ON account_asset TO wallet_reader;
+
 -- Отчётные функции объявлены SECURITY INVOKER (по умолчанию), то есть внутри
 -- работают с правами вызывающего. Права на EXECUTE в PostgreSQL по умолчанию
 -- есть у PUBLIC, так что этот блок ничего не открывает — он фиксирует, какие
@@ -72,6 +78,8 @@ GRANT EXECUTE ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uu
 GRANT EXECUTE ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[]) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_wallet_turnover_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 GRANT EXECUTE ON FUNCTION f_balance_to_dates(uuid, timestamp[], uuid) TO wallet_reader;
+GRANT EXECUTE ON FUNCTION f_balance_series(uuid, date, date, text, uuid) TO wallet_reader;
+GRANT EXECUTE ON FUNCTION f_assets_for_period(uuid, timestamp, timestamp, uuid) TO wallet_reader;
 
 -- Снятие прав записи, если они у роли откуда-то есть. На свежей роли это
 -- no-op; смысл строки — в том, что после прогона apply.sql состояние роли

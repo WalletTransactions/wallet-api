@@ -89,6 +89,15 @@ AS $$
          WHERE oe.ledger_id        = p_ledger_id
            AND oe.to_currency_uuid = p_eq_currency
            AND oe."date" BETWEEN p_from AND p_to
+           -- Переоценка актива — не оборот (capital-assets, 000033): сторона
+           -- с system_kind = 3, без фильтра deleted_at. Здесь и в opt/opf ниже
+           -- одним текстом, иначе своя валюта и эквивалент разъедутся.
+           AND NOT EXISTS (
+                   SELECT 1 FROM account r
+                    WHERE r.ledger_id = p_ledger_id
+                      AND r.uuid IN (oe.acc_fr_uuid, oe.acc_to_uuid)
+                      AND r.system_kind = 3
+               )
     ),
     oe_by_account AS (
         SELECT acc_to_uuid AS acc_uuid, amount_eq, true AS is_in FROM oe
@@ -130,6 +139,12 @@ AS $$
              WHERE o.ledger_id = p_ledger_id
                AND o.deleted_at IS NULL
                AND o."date" BETWEEN p_from AND p_to
+               AND NOT EXISTS (
+                       SELECT 1 FROM account r
+                        WHERE r.ledger_id = p_ledger_id
+                          AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                          AND r.system_kind = 3
+                   )
              GROUP BY o.acc_to_uuid
            ) opt ON opt.acc_to_uuid = vao.uuid
       LEFT JOIN (
@@ -138,6 +153,12 @@ AS $$
              WHERE o.ledger_id = p_ledger_id
                AND o.deleted_at IS NULL
                AND o."date" BETWEEN p_from AND p_to
+               AND NOT EXISTS (
+                       SELECT 1 FROM account r
+                        WHERE r.ledger_id = p_ledger_id
+                          AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
+                          AND r.system_kind = 3
+                   )
              GROUP BY o.acc_fr_uuid
            ) opf ON opf.acc_fr_uuid = vao.uuid
       LEFT JOIN oe_agg ON oe_agg.acc_uuid = vao.uuid

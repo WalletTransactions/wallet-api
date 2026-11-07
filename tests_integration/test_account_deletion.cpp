@@ -111,6 +111,11 @@ TEST(delete_own_account_wipes_ledger_with_own_icon_currency_pair_and_wallet) {
     auto op_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
     db->exec("INSERT INTO account_operating (uuid, ledger_id, seq, currency_uuid) VALUES ($1, $2, $3, $4)",
              {wallet, owner.ledger_id, op_seq.rows.at(0).fields.at(0), base});
+    // capital-assets: кошелёк — актив; каскад account → account_operating →
+    // account_asset уносит и эту строку без отдельного SET CONSTRAINTS.
+    auto asset_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO account_asset (uuid, ledger_id, seq, asset_type) VALUES ($1, $2, $3, 1)",
+             {wallet, owner.ledger_id, asset_seq.rows.at(0).fields.at(0)});
     std::string category = add_account(*db, owner.ledger_id, own_icon);
     auto operation_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
     db->exec("INSERT INTO operation (uuid, ledger_id, seq, \"date\", acc_fr_uuid, acc_to_uuid, amount) "
@@ -122,6 +127,7 @@ TEST(delete_own_account_wipes_ledger_with_own_icon_currency_pair_and_wallet) {
 
     CHECK(!ledger_exists(*db, owner.ledger_id));
     CHECK(!account_exists(*db, owner.ledger_id, wallet));
+    CHECK(db->exec("SELECT 1 FROM account_asset WHERE ledger_id = $1", {owner.ledger_id}).rows.empty());
     CHECK(db->exec("SELECT 1 FROM currency WHERE uuid IN ($1, $2)", {base, quote}).rows.empty());
     CHECK(db->exec("SELECT 1 FROM icon WHERE uuid = $1", {own_icon}).rows.empty());
     CHECK(!change_stream_exists(*db, owner.ledger_id));
