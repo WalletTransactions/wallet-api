@@ -205,6 +205,21 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
 // массив), "delete_not_allowed" (строка с deleted: true).
 std::string create_only_violation(const nlohmann::json& changes);
 
+// Что push_batch проверяет на «связь удалённой операции» (change
+// cascade-link-tombstones): uuid операций, пришедших с "deleted": true, и uuid
+// связей, пришедших живыми. Чистая функция ради юнит-тестов; строки без uuid
+// и не-массивы пропускаются — их и так отвергнет upsert.
+struct LinkCascadeInputs {
+    std::vector<std::string> deleted_operations;
+    std::vector<std::string> live_links;
+    bool empty() const { return deleted_operations.empty() && live_links.empty(); }
+};
+LinkCascadeInputs link_cascade_inputs(const nlohmann::json& changes);
+
+// Литерал массива Postgres ("{a,b}") для параметра ::uuid[] — db.hpp передаёт
+// параметры только текстом.
+std::string pg_array_literal(const std::vector<std::string>& values);
+
 struct PullResult {
     int64_t next_seq;
     nlohmann::json changes; // {"account": [...], "operation": [...], ...}

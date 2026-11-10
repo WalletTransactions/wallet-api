@@ -1201,3 +1201,142 @@ TEST(old_client_batch_without_account_asset_is_accepted_as_before) {
     CHECK_EQ(outcome.http_status, 200);
     CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("NULL"));
 }
+
+// --- Связи удалённых операций (change cascade-link-tombstones) ---------------
+
+namespace {
+
+json make_operation_row(const std::string& uuid, const std::string& acc_fr, const std::string& acc_to,
+                        const std::string& comment = "") {
+    return json{{"uuid", uuid},     {"date", "2026-09-04T12:00:00"}, {"acc_fr_uuid", acc_fr},
+                {"acc_to_uuid", acc_to}, {"amount", "10.00"},          {"comment", comment}};
+}
+
+json make_link_row(const std::string& uuid, const std::string& main_uuid, const std::string& link_uuid,
+                   int type) {
+    return json{{"uuid", uuid}, {"main_uuid", main_uuid}, {"link_uuid", link_uuid}, {"type", type}};
+}
+
+json deleted(json row) {
+    row["deleted"] = true;
+    return row;
+}
+
+int64_t pushed_seq(const sync_repo::PushOutcome& outcome) {
+    return json::parse(outcome.response_body).at("seq").get<int64_t>();
+}
+
+// "deleted|seq" связи — одним значением, чтобы CHECK_EQ показал оба поля.
+std::string link_state(db::Database& db, const std::string& ledger_id, const std::string& uuid) {
+    auto res = db.exec("SELECT (deleted_at IS NOT NULL)::text || '|' || seq FROM operation_link "
+                       "WHERE ledger_id = $1 AND uuid = $2",
+                       {ledger_id, uuid});
+    return res.rows.empty() ? std::string("missing") : res.rows.at(0).fields.at(0);
+}
+
+// Перевод с комиссией: main → leg (type 0, вторая нога), main → fee (type 1).
+struct Transfer {
+    std::string acc_fr, acc_to, main, leg, fee, link_leg, link_fee;
+    int64_t seq = 0;
+};
+
+Transfer push_transfer(std::shared_ptr<db::Database> db, const fixture::TestIdentity& identity,
+                       const std::string& icon_uuid) {
+    Transfer t{uuidgen::v4(), uuidgen::v4(), uuidgen::v4(), uuidgen::v4(),
+               uuidgen::v4(), uuidgen::v4(), uuidgen::v4()};
+    json changes = {
+        {"account", json::array({make_account_row(t.acc_fr, icon_uuid, "Link fr " + t.acc_fr),
+                                 make_account_row(t.acc_to, icon_uuid, "Link to " + t.acc_to)})},
+        {"operation", json::array({make_operation_row(t.main, t.acc_fr, t.acc_to),
+                                   make_operation_row(t.leg, t.acc_fr, t.acc_to),
+                                   make_operation_row(t.fee, t.acc_fr, t.acc_to)})},
+        {"operation_link", json::array({make_link_row(t.link_leg, t.main, t.leg, 0),
+                                        make_link_row(t.link_fee, t.main, t.fee, 1)})},
+    };
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(outcome.http_status == 200);
+    t.seq = pushed_seq(outcome);
+    return t;
+}
+
+} // namespace
+
+TEST(deleting_operations_tombstones_their_links_with_batch_seq_and_pulls_them) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    Transfer t = push_transfer(db, identity, icon_uuid);
+
+    json changes = {{"operation", json::array({deleted(make_operation_row(t.main, t.acc_fr, t.acc_to)),
+                                               deleted(make_operation_row(t.leg, t.acc_fr, t.acc_to)),
+                                               deleted(make_operation_row(t.fee, t.acc_fr, t.acc_to))})}};
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(outcome.http_status == 200);
+    int64_t seq = pushed_seq(outcome);
+    CHECK_EQ(json::parse(outcome.response_body).at("conflicts").size(), 0u);
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_leg), "true|" + std::to_string(seq));
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_fee), "true|" + std::to_string(seq));
+
+    // Устройство, дочитавшее до перевода, получает удаление связей вместе с операциями.
+    auto pull = sync_repo::pull_ledger_stream(*db, identity.ledger_id, t.seq, 1000);
+    REQUIRE(pull.changes.contains("operation_link"));
+    int tombstones = 0;
+    for (const auto& row : pull.changes.at("operation_link")) {
+        if (!row.at("deleted_at").is_null()) ++tombstones;
+    }
+    CHECK_EQ(tombstones, 2);
+}
+
+TEST(link_pushed_live_after_its_operations_were_deleted_is_stored_deleted) {
+    // Pixel 8 Pro, 2026-11-10: телефон дослал живые связи уже после удаления операций.
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string acc_fr = uuidgen::v4(), acc_to = uuidgen::v4(), main = uuidgen::v4(), leg = uuidgen::v4();
+    json first = {
+        {"account", json::array({make_account_row(acc_fr, icon_uuid, "Late fr " + acc_fr),
+                                 make_account_row(acc_to, icon_uuid, "Late to " + acc_to)})},
+        {"operation", json::array({deleted(make_operation_row(main, acc_fr, acc_to)),
+                                   deleted(make_operation_row(leg, acc_fr, acc_to))})},
+    };
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), first).http_status ==
+            200);
+
+    std::string link = uuidgen::v4();
+    json second = {{"operation_link", json::array({make_link_row(link, main, leg, 0)})}};
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), second);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(json::parse(outcome.response_body).at("conflicts").size(), 0u);
+    CHECK_EQ(link_state(*db, identity.ledger_id, link), "true|" + std::to_string(pushed_seq(outcome)));
+}
+
+TEST(deleting_only_commission_keeps_the_transfer_leg_link) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    Transfer t = push_transfer(db, identity, icon_uuid);
+
+    json changes = {{"operation", json::array({deleted(make_operation_row(t.fee, t.acc_fr, t.acc_to))})}};
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(outcome.http_status == 200);
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_fee), "true|" + std::to_string(pushed_seq(outcome)));
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_leg), "false|" + std::to_string(t.seq));
+}
+
+TEST(editing_live_operation_does_not_touch_its_links) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    Transfer t = push_transfer(db, identity, icon_uuid);
+
+    // Правка операции и повторная отправка той же живой связи.
+    json changes = {
+        {"operation", json::array({make_operation_row(t.main, t.acc_fr, t.acc_to, "edited")})},
+        {"operation_link", json::array({make_link_row(t.link_leg, t.main, t.leg, 0)})},
+    };
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes);
+    REQUIRE(outcome.http_status == 200);
+    // link_leg пришла в батче — upsert дал ей seq батча, но живой; link_fee не тронута.
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_leg), "false|" + std::to_string(pushed_seq(outcome)));
+    CHECK_EQ(link_state(*db, identity.ledger_id, t.link_fee), "false|" + std::to_string(t.seq));
+}
