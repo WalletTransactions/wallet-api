@@ -345,26 +345,73 @@ std::string create_only_violation(const json& changes) {
     return {};
 }
 
-LinkCascadeInputs link_cascade_inputs(const json& changes) {
-    LinkCascadeInputs out;
-    if (!changes.is_object()) return out;
-    auto collect = [&](const char* table, bool want_deleted, std::vector<std::string>& dst) {
-        auto it = changes.find(table);
-        if (it == changes.end() || !it->is_array()) return;
-        for (const auto& row : *it) {
-            if (!row.is_object()) continue;
-            auto uuid = row.find("uuid");
-            if (uuid == row.end() || !uuid->is_string()) continue;
-            // Не-булево "deleted" не бросает здесь: такую строку отвергнет сам
-            // upsert (400 invalid_row), до каскада дело не дойдёт.
-            auto flag = row.find("deleted");
-            bool deleted = flag != row.end() && flag->is_boolean() && flag->get<bool>();
-            if (deleted == want_deleted) dst.push_back(uuid->get<std::string>());
-        }
+const std::vector<CascadeRule>& cascade_rules() {
+    // Родитель здесь — та же ссылка, что в sync_table_refs() (юнит-тест сверяет):
+    // связь держится за обе операции, актив — за кошелёк (account_operating) и
+    // за сам счёт (тот же uuid; «Удалить данные» на телефоне снимает оба).
+    static const std::vector<CascadeRule> rules = {
+        {"operation_link", {{"operation", "main_uuid"}, {"operation", "link_uuid"}}},
+        {"account_asset", {{"account_operating", "uuid"}, {"account", "uuid"}}},
     };
-    collect("operation", /*want_deleted=*/true, out.deleted_operations);
-    collect("operation_link", /*want_deleted=*/false, out.live_links);
+    return rules;
+}
+
+namespace {
+
+void collect_uuids(const json& changes, const std::string& table, bool want_deleted,
+                   std::vector<std::string>& dst) {
+    auto it = changes.find(table);
+    if (it == changes.end() || !it->is_array()) return;
+    for (const auto& row : *it) {
+        if (!row.is_object()) continue;
+        auto uuid = row.find("uuid");
+        if (uuid == row.end() || !uuid->is_string()) continue;
+        // Не-булево "deleted" не бросает здесь: такую строку отвергнет сам
+        // upsert (400 invalid_row), до каскада дело не дойдёт.
+        auto flag = row.find("deleted");
+        bool deleted = flag != row.end() && flag->is_boolean() && flag->get<bool>();
+        if (deleted != want_deleted) continue;
+        std::string value = uuid->get<std::string>();
+        if (!contains(dst, value)) dst.push_back(std::move(value));
+    }
+}
+
+} // namespace
+
+CascadeInputs cascade_inputs(const json& changes, const CascadeRule& rule) {
+    CascadeInputs out;
+    if (!changes.is_object()) return out;
+    std::vector<std::string> seen_tables;
+    for (const auto& parent : rule.parents) {
+        if (contains(seen_tables, parent.table)) continue; // operation дважды — один проход
+        seen_tables.push_back(parent.table);
+        collect_uuids(changes, parent.table, /*want_deleted=*/true, out.deleted_parents);
+    }
+    collect_uuids(changes, rule.child, /*want_deleted=*/false, out.live_children);
     return out;
+}
+
+std::string build_cascade_sql(const CascadeRule& rule) {
+    // Кандидаты — только строки, которых касается батч: дети удалённых им
+    // родителей и дети, присланные им живыми. Стоимость push не растёт с
+    // размером леджера (индексы по ledger_id + колонке ссылки есть у обеих таблиц).
+    std::vector<std::string> columns;
+    for (const auto& p : rule.parents) {
+        if (!contains(columns, p.child_column)) columns.push_back(p.child_column);
+    }
+    std::string touched;
+    for (const auto& col : columns) touched += "c." + col + " = ANY($4::uuid[]) OR ";
+    touched += "c.uuid = ANY($5::uuid[])";
+
+    std::string dead_parent;
+    for (const auto& p : rule.parents) {
+        if (!dead_parent.empty()) dead_parent += " OR ";
+        dead_parent += "EXISTS (SELECT 1 FROM " + p.table + " p WHERE p.ledger_id = c.ledger_id AND p.uuid = c." +
+                       p.child_column + " AND p.deleted_at IS NOT NULL)";
+    }
+    return "UPDATE " + rule.child + " c SET deleted_at = now(), seq = $2, updated_by = $3 "
+           "WHERE c.ledger_id = $1 AND c.deleted_at IS NULL AND (" + touched + ") AND (" + dead_parent +
+           ") RETURNING 1";
 }
 
 std::string pg_array_literal(const std::vector<std::string>& values) {
@@ -378,33 +425,29 @@ std::string pg_array_literal(const std::vector<std::string>& values) {
 
 namespace {
 
-// Связь операций мертва, если удалена хотя бы одна её операция (change
-// cascade-link-tombstones, design: решения 2–4). Клиенты удаляют операцию
-// мягко и связь не трогают, а FK ON DELETE CASCADE мягкого удаления не видит —
-// без этого живые связи удалённых операций копились бы вечно, а телефон,
-// вычистивший у себя удалённые операции, каждый pull откладывал бы их как
-// «строки без родителя». Только связи, которых касается батч: стоимость push
-// не растёт с размером леджера. uuid в литералах уже прошли upsert этого же
-// батча — значит, валидны для ::uuid[].
-void tombstone_links_of_deleted_operations(db::Database::Transaction& tx, const std::string& ledger_id,
+// Правила cascade_rules() — после всех upsert батча, в его транзакции, с его
+// seq и устройством: tombstone ребёнка едет в pull той же страницей, что и
+// удаление родителя. Без этого живые связи удалённых операций и активы
+// удалённых кошельков копились бы вечно, а телефон, вычистивший у себя
+// удалённых родителей, на каждом pull с нуля откладывал бы их как «строки без
+// родителя». uuid в литералах уже прошли upsert этого же батча — значит,
+// валидны для ::uuid[].
+void tombstone_children_of_deleted_parents(db::Database::Transaction& tx, const std::string& ledger_id,
                                            const std::string& device_id, int64_t seq, const json& changes) {
-    auto inputs = link_cascade_inputs(changes);
-    if (inputs.empty()) return;
-    auto res = tx.exec(
-        "UPDATE operation_link l SET deleted_at = now(), seq = $2, updated_by = $3 "
-        "WHERE l.ledger_id = $1 AND l.deleted_at IS NULL "
-        "AND (l.main_uuid = ANY($4::uuid[]) OR l.link_uuid = ANY($4::uuid[]) OR l.uuid = ANY($5::uuid[])) "
-        "AND EXISTS (SELECT 1 FROM operation o WHERE o.ledger_id = l.ledger_id "
-        "AND o.uuid IN (l.main_uuid, l.link_uuid) AND o.deleted_at IS NOT NULL) "
-        "RETURNING 1",
-        {ledger_id, std::to_string(seq), device_id, pg_array_literal(inputs.deleted_operations),
-         pg_array_literal(inputs.live_links)});
-    if (!res.rows.empty()) {
-        applog::info("operation links of deleted operations tombstoned",
-                     {{"event", "sync_push_link_cascade"},
-                      {"ledger_id", ledger_id},
-                      {"seq", seq},
-                      {"links", static_cast<int64_t>(res.rows.size())}});
+    for (const auto& rule : cascade_rules()) {
+        auto inputs = cascade_inputs(changes, rule);
+        if (inputs.empty()) continue;
+        auto res = tx.exec(build_cascade_sql(rule),
+                           {ledger_id, std::to_string(seq), device_id, pg_array_literal(inputs.deleted_parents),
+                            pg_array_literal(inputs.live_children)});
+        if (!res.rows.empty()) {
+            applog::info("children of deleted rows tombstoned",
+                         {{"event", "sync_push_cascade"},
+                          {"table", rule.child},
+                          {"ledger_id", ledger_id},
+                          {"seq", seq},
+                          {"rows", static_cast<int64_t>(res.rows.size())}});
+        }
     }
 }
 
@@ -441,9 +484,9 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
             if (spec == nullptr || !value.is_array()) continue;
             for (const auto& row : value) upsert_row(tx, *spec, ledger_id, device_id, seq, row, create_only);
         }
-        // После всех upsert: и удаление операции, и живая связь могли прийти
-        // этим же батчем. Бот (create_only) не удаляет и связей не шлёт.
-        if (!create_only) tombstone_links_of_deleted_operations(tx, ledger_id, device_id, seq, changes);
+        // После всех upsert: и удаление родителя, и живой ребёнок могли прийти
+        // этим же батчем. Бот (create_only) не удаляет и шлёт только operation.
+        if (!create_only) tombstone_children_of_deleted_parents(tx, ledger_id, device_id, seq, changes);
 
         json response_json = {{"seq", seq}, {"conflicts", json::array()}};
         std::string response_text = response_json.dump();

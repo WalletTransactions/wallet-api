@@ -1340,3 +1340,79 @@ TEST(editing_live_operation_does_not_touch_its_links) {
     CHECK_EQ(link_state(*db, identity.ledger_id, t.link_leg), "false|" + std::to_string(pushed_seq(outcome)));
     CHECK_EQ(link_state(*db, identity.ledger_id, t.link_fee), "false|" + std::to_string(t.seq));
 }
+
+// --- Активы удалённых кошельков (change cascade-asset-tombstones) ------------
+
+namespace {
+
+std::string asset_state(db::Database& db, const std::string& ledger_id, const std::string& uuid) {
+    auto res = db.exec("SELECT (deleted_at IS NOT NULL)::text || '|' || seq FROM account_asset "
+                       "WHERE ledger_id = $1 AND uuid = $2",
+                       {ledger_id, uuid});
+    return res.rows.empty() ? std::string("missing") : res.rows.at(0).fields.at(0);
+}
+
+// Кошелёк, как его удаляет «Удалить данные» на телефоне: account и account_operating.
+json delete_wallet_batch(const std::string& wallet_uuid, const std::string& icon_uuid,
+                         const std::string& currency_uuid) {
+    json account = make_account_row(wallet_uuid, icon_uuid, "Asset " + wallet_uuid);
+    account["kind"] = 1;
+    return {{"account", json::array({deleted(account)})},
+            {"account_operating",
+             json::array({deleted(json{{"uuid", wallet_uuid}, {"currency_uuid", currency_uuid}})})}};
+}
+
+} // namespace
+
+TEST(deleting_wallet_tombstones_its_asset_with_batch_seq) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                               new_asset_batch(wallet, icon_uuid, currency_uuid, 1))
+                .http_status == 200);
+
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      delete_wallet_batch(wallet, icon_uuid, currency_uuid));
+    REQUIRE(outcome.http_status == 200);
+    CHECK_EQ(json::parse(outcome.response_body).at("conflicts").size(), 0u);
+    CHECK_EQ(asset_state(*db, identity.ledger_id, wallet), "true|" + std::to_string(pushed_seq(outcome)));
+}
+
+TEST(asset_pushed_live_after_its_wallet_was_deleted_is_stored_deleted) {
+    // Pixel 8 Pro, 2026-11-10: живые активы трёх кошельков, удалённых «Удалить данные».
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+    json first = delete_wallet_batch(wallet, icon_uuid, currency_uuid);
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), first).http_status ==
+            200);
+
+    json second = {{"account_asset", json::array({make_asset_row(wallet, 1)})}};
+    auto outcome = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), second);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(asset_state(*db, identity.ledger_id, wallet), "true|" + std::to_string(pushed_seq(outcome)));
+}
+
+TEST(renaming_live_wallet_does_not_touch_its_asset) {
+    auto db = fixture::open();
+    auto identity = fixture::make_identity(*db);
+    std::string icon_uuid = fixture::make_reference_icon(*db);
+    std::string currency_uuid = fixture::make_currency(*db, identity.ledger_id, icon_uuid);
+    std::string wallet = uuidgen::v4();
+    auto created = push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(),
+                                      new_asset_batch(wallet, icon_uuid, currency_uuid, 1));
+    REQUIRE(created.http_status == 200);
+
+    json account = make_account_row(wallet, icon_uuid, "Renamed " + wallet);
+    account["kind"] = 1;
+    json changes = {{"account", json::array({account})}};
+    REQUIRE(push_batch_guarded(db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes).http_status ==
+            200);
+    CHECK_EQ(asset_state(*db, identity.ledger_id, wallet), "false|" + std::to_string(pushed_seq(created)));
+    CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("1"));
+}

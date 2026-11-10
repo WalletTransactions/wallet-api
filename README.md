@@ -201,6 +201,10 @@ claim `device_id` (см. README google-auth, "Детали устройства"
   удаляют операцию без её связей, а FK `ON DELETE CASCADE` мягкого удаления не
   видит; без этого телефон, вычистивший удалённые операции, на каждом pull
   получал бы связи «без родителя».
+- **Актив удалённого кошелька удаляется сам** (change
+  `cascade-asset-tombstones`, миграция 000035): то же правило для
+  `account_asset`, у которого удалён `account_operating` или `account` (общий
+  uuid кошелька). Оба каскада — правила `sync_repo::cascade_rules()`.
 - Порядок применения таблиц батча — не порядок ключей в JSON, а
   `sync_repo::apply_order()`: `icon`, `currency`, `currency_pair`,
   `currency_pair_rate`, `currency_conversion`, `account`,

@@ -205,16 +205,35 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
 // массив), "delete_not_allowed" (строка с deleted: true).
 std::string create_only_violation(const nlohmann::json& changes);
 
-// Что push_batch проверяет на «связь удалённой операции» (change
-// cascade-link-tombstones): uuid операций, пришедших с "deleted": true, и uuid
-// связей, пришедших живыми. Чистая функция ради юнит-тестов; строки без uuid
-// и не-массивы пропускаются — их и так отвергнет upsert.
-struct LinkCascadeInputs {
-    std::vector<std::string> deleted_operations;
-    std::vector<std::string> live_links;
-    bool empty() const { return deleted_operations.empty() && live_links.empty(); }
+// Каскад мягкого удаления в push_batch (changes cascade-link-tombstones,
+// cascade-asset-tombstones): живая строка child мертва, если удалена хотя бы
+// одна её родительская строка (parent.uuid = child.<column>). Клиенты удаляют
+// родителя без детей, а FK ON DELETE CASCADE мягкого удаления не видит.
+struct CascadeParent {
+    std::string table;
+    std::string child_column;
 };
-LinkCascadeInputs link_cascade_inputs(const nlohmann::json& changes);
+struct CascadeRule {
+    std::string child;
+    std::vector<CascadeParent> parents;
+};
+// operation_link ← operation (main_uuid, link_uuid);
+// account_asset ← account_operating, account (uuid — общий ключ кошелька).
+const std::vector<CascadeRule>& cascade_rules();
+
+// Что батч приносит для правила: uuid родителей, пришедших с "deleted": true,
+// и uuid детей, пришедших живыми. Чистая функция ради юнит-тестов; строки без
+// uuid и не-массивы пропускаются — их и так отвергнет upsert.
+struct CascadeInputs {
+    std::vector<std::string> deleted_parents;
+    std::vector<std::string> live_children;
+    bool empty() const { return deleted_parents.empty() && live_children.empty(); }
+};
+CascadeInputs cascade_inputs(const nlohmann::json& changes, const CascadeRule& rule);
+
+// UPDATE правила: $1 ledger_id, $2 seq, $3 device_id, $4 удалённые родители,
+// $5 живые дети (оба — ::uuid[]); RETURNING 1 на каждую закрытую строку.
+std::string build_cascade_sql(const CascadeRule& rule);
 
 // Литерал массива Postgres ("{a,b}") для параметра ::uuid[] — db.hpp передаёт
 // параметры только текстом.

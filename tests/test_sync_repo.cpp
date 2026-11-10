@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <set>
+#include <stdexcept>
 
 #include "test_framework.hpp"
 
@@ -260,11 +261,53 @@ TEST(create_only_violation_allows_only_new_operations) {
     CHECK_EQ(create_only_violation(json{{"operation", json::array({deleted})}}), std::string("delete_not_allowed"));
 }
 
-// --- Связи удалённых операций (change cascade-link-tombstones) ---
+// --- Каскад мягкого удаления (changes cascade-link-tombstones, cascade-asset-tombstones) ---
 
-TEST(link_cascade_inputs_collects_deleted_operations_and_live_links) {
+namespace {
+
+bool sql_has(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+const sync_repo::CascadeRule& rule_for(const std::string& child) {
+    for (const auto& r : sync_repo::cascade_rules()) {
+        if (r.child == child) return r;
+    }
+    throw std::runtime_error("нет правила каскада для " + child);
+}
+
+// Ссылка child.<column> → parent есть в sync_table_refs() напрямую или (для
+// общего uuid кошелька) через одну промежуточную таблицу по тому же uuid.
+bool references(const std::string& child, const std::string& column, const std::string& parent) {
+    auto direct = [](const std::string& c, const std::string& col, const std::string& p) {
+        for (const auto& ref : sync_repo::sync_table_refs()) {
+            if (ref.child == c && ref.parent == p && ref.child_columns.back() == col) return true;
+        }
+        return false;
+    };
+    if (direct(child, column, parent)) return true;
+    if (column != "uuid") return false;
+    for (const auto& ref : sync_repo::sync_table_refs()) {
+        if (ref.child == child && ref.child_columns.back() == "uuid" && direct(ref.parent, "uuid", parent)) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(cascade_rules_follow_sync_table_refs) {
+    CHECK_EQ(sync_repo::cascade_rules().size(), 2u);
+    for (const auto& rule : sync_repo::cascade_rules()) {
+        CHECK(find(push_tables(), rule.child) != nullptr);
+        for (const auto& p : rule.parents) {
+            CHECK(find(push_tables(), p.table) != nullptr);
+            CHECK(references(rule.child, p.child_column, p.table));
+        }
+    }
+}
+
+TEST(cascade_inputs_for_links_collect_deleted_operations_and_live_links) {
     using nlohmann::json;
-    using sync_repo::link_cascade_inputs;
     json changes = {
         {"operation", json::array({json{{"uuid", "op-del"}, {"deleted", true}},
                                    json{{"uuid", "op-live"}},
@@ -276,22 +319,53 @@ TEST(link_cascade_inputs_collects_deleted_operations_and_live_links) {
                                         json{{"uuid", "link-del"}, {"deleted", true}}})},
         {"account", json::array({json{{"uuid", "acc"}, {"deleted", true}}})},
     };
-    auto in = link_cascade_inputs(changes);
-    CHECK(in.deleted_operations == std::vector<std::string>{"op-del"});
-    CHECK(in.live_links == (std::vector<std::string>{"link-live", "link-false"}));
+    auto in = sync_repo::cascade_inputs(changes, rule_for("operation_link"));
+    // operation — родитель дважды (main_uuid, link_uuid), uuid не дублируется.
+    CHECK(in.deleted_parents == std::vector<std::string>{"op-del"});
+    CHECK(in.live_children == (std::vector<std::string>{"link-live", "link-false"}));
     CHECK(!in.empty());
 }
 
-TEST(link_cascade_inputs_is_empty_without_deletes_or_links) {
+TEST(cascade_inputs_for_assets_collect_deleted_wallets_and_live_assets) {
     using nlohmann::json;
-    using sync_repo::link_cascade_inputs;
-    CHECK(link_cascade_inputs(json::object()).empty());
-    CHECK(link_cascade_inputs(json::array()).empty());
-    CHECK(link_cascade_inputs(json{{"operation", json::object()}}).empty());
-    CHECK(link_cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}}})}}).empty());
+    json changes = {
+        {"account", json::array({json{{"uuid", "w1"}, {"deleted", true}}, json{{"uuid", "w3"}}})},
+        {"account_operating", json::array({json{{"uuid", "w1"}, {"deleted", true}},
+                                           json{{"uuid", "w2"}, {"deleted", true}}})},
+        {"account_asset", json::array({json{{"uuid", "w4"}}, json{{"uuid", "w5"}, {"deleted", true}}})},
+        {"operation", json::array({json{{"uuid", "op"}, {"deleted", true}}})},
+    };
+    auto in = sync_repo::cascade_inputs(changes, rule_for("account_asset"));
+    CHECK(in.deleted_parents == (std::vector<std::string>{"w1", "w2"}));
+    CHECK(in.live_children == std::vector<std::string>{"w4"});
+}
+
+TEST(cascade_inputs_is_empty_without_deletes_or_children) {
+    using nlohmann::json;
+    const auto& links = rule_for("operation_link");
+    CHECK(sync_repo::cascade_inputs(json::object(), links).empty());
+    CHECK(sync_repo::cascade_inputs(json::array(), links).empty());
+    CHECK(sync_repo::cascade_inputs(json{{"operation", json::object()}}, links).empty());
+    CHECK(sync_repo::cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}}})}}, links).empty());
     // Не-булево deleted не бросает и не считается удалением.
-    CHECK(link_cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}, {"deleted", "yes"}}})}})
-              .deleted_operations.empty());
+    CHECK(sync_repo::cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}, {"deleted", "yes"}}})}},
+                                    links)
+              .deleted_parents.empty());
+}
+
+TEST(build_cascade_sql_checks_every_parent_and_dedupes_columns) {
+    std::string links = sync_repo::build_cascade_sql(rule_for("operation_link"));
+    CHECK(sql_has(links, "UPDATE operation_link c SET deleted_at = now(), seq = $2, updated_by = $3"));
+    CHECK(sql_has(links, "c.main_uuid = ANY($4::uuid[]) OR c.link_uuid = ANY($4::uuid[]) OR c.uuid = ANY($5::uuid[])"));
+    CHECK(sql_has(links, "FROM operation p WHERE p.ledger_id = c.ledger_id AND p.uuid = c.main_uuid"));
+    CHECK(sql_has(links, "FROM operation p WHERE p.ledger_id = c.ledger_id AND p.uuid = c.link_uuid"));
+
+    std::string assets = sync_repo::build_cascade_sql(rule_for("account_asset"));
+    // Оба родителя — по uuid: колонка в списке кандидатов одна.
+    CHECK(sql_has(assets, "(c.uuid = ANY($4::uuid[]) OR c.uuid = ANY($5::uuid[]))"));
+    CHECK(sql_has(assets, "FROM account_operating p WHERE"));
+    CHECK(sql_has(assets, "FROM account p WHERE"));
+    CHECK(sql_has(assets, "RETURNING 1"));
 }
 
 TEST(pg_array_literal_joins_values_in_braces) {
