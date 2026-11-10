@@ -345,6 +345,71 @@ std::string create_only_violation(const json& changes) {
     return {};
 }
 
+LinkCascadeInputs link_cascade_inputs(const json& changes) {
+    LinkCascadeInputs out;
+    if (!changes.is_object()) return out;
+    auto collect = [&](const char* table, bool want_deleted, std::vector<std::string>& dst) {
+        auto it = changes.find(table);
+        if (it == changes.end() || !it->is_array()) return;
+        for (const auto& row : *it) {
+            if (!row.is_object()) continue;
+            auto uuid = row.find("uuid");
+            if (uuid == row.end() || !uuid->is_string()) continue;
+            // Не-булево "deleted" не бросает здесь: такую строку отвергнет сам
+            // upsert (400 invalid_row), до каскада дело не дойдёт.
+            auto flag = row.find("deleted");
+            bool deleted = flag != row.end() && flag->is_boolean() && flag->get<bool>();
+            if (deleted == want_deleted) dst.push_back(uuid->get<std::string>());
+        }
+    };
+    collect("operation", /*want_deleted=*/true, out.deleted_operations);
+    collect("operation_link", /*want_deleted=*/false, out.live_links);
+    return out;
+}
+
+std::string pg_array_literal(const std::vector<std::string>& values) {
+    std::string out = "{";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out += ",";
+        out += values[i];
+    }
+    return out + "}";
+}
+
+namespace {
+
+// Связь операций мертва, если удалена хотя бы одна её операция (change
+// cascade-link-tombstones, design: решения 2–4). Клиенты удаляют операцию
+// мягко и связь не трогают, а FK ON DELETE CASCADE мягкого удаления не видит —
+// без этого живые связи удалённых операций копились бы вечно, а телефон,
+// вычистивший у себя удалённые операции, каждый pull откладывал бы их как
+// «строки без родителя». Только связи, которых касается батч: стоимость push
+// не растёт с размером леджера. uuid в литералах уже прошли upsert этого же
+// батча — значит, валидны для ::uuid[].
+void tombstone_links_of_deleted_operations(db::Database::Transaction& tx, const std::string& ledger_id,
+                                           const std::string& device_id, int64_t seq, const json& changes) {
+    auto inputs = link_cascade_inputs(changes);
+    if (inputs.empty()) return;
+    auto res = tx.exec(
+        "UPDATE operation_link l SET deleted_at = now(), seq = $2, updated_by = $3 "
+        "WHERE l.ledger_id = $1 AND l.deleted_at IS NULL "
+        "AND (l.main_uuid = ANY($4::uuid[]) OR l.link_uuid = ANY($4::uuid[]) OR l.uuid = ANY($5::uuid[])) "
+        "AND EXISTS (SELECT 1 FROM operation o WHERE o.ledger_id = l.ledger_id "
+        "AND o.uuid IN (l.main_uuid, l.link_uuid) AND o.deleted_at IS NOT NULL) "
+        "RETURNING 1",
+        {ledger_id, std::to_string(seq), device_id, pg_array_literal(inputs.deleted_operations),
+         pg_array_literal(inputs.live_links)});
+    if (!res.rows.empty()) {
+        applog::info("operation links of deleted operations tombstoned",
+                     {{"event", "sync_push_link_cascade"},
+                      {"ledger_id", ledger_id},
+                      {"seq", seq},
+                      {"links", static_cast<int64_t>(res.rows.size())}});
+    }
+}
+
+} // namespace
+
 PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std::string& device_id,
                         const std::string& batch_id, const json& changes, PushMode mode) {
     const bool create_only = mode == PushMode::CreateOperationsOnly;
@@ -376,6 +441,9 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
             if (spec == nullptr || !value.is_array()) continue;
             for (const auto& row : value) upsert_row(tx, *spec, ledger_id, device_id, seq, row, create_only);
         }
+        // После всех upsert: и удаление операции, и живая связь могли прийти
+        // этим же батчем. Бот (create_only) не удаляет и связей не шлёт.
+        if (!create_only) tombstone_links_of_deleted_operations(tx, ledger_id, device_id, seq, changes);
 
         json response_json = {{"seq", seq}, {"conflicts", json::array()}};
         std::string response_text = response_json.dump();

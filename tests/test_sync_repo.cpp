@@ -260,6 +260,47 @@ TEST(create_only_violation_allows_only_new_operations) {
     CHECK_EQ(create_only_violation(json{{"operation", json::array({deleted})}}), std::string("delete_not_allowed"));
 }
 
+// --- Связи удалённых операций (change cascade-link-tombstones) ---
+
+TEST(link_cascade_inputs_collects_deleted_operations_and_live_links) {
+    using nlohmann::json;
+    using sync_repo::link_cascade_inputs;
+    json changes = {
+        {"operation", json::array({json{{"uuid", "op-del"}, {"deleted", true}},
+                                   json{{"uuid", "op-live"}},
+                                   json{{"uuid", "op-false"}, {"deleted", false}},
+                                   json{{"deleted", true}}, // без uuid — пропуск
+                                   1})},
+        {"operation_link", json::array({json{{"uuid", "link-live"}},
+                                        json{{"uuid", "link-false"}, {"deleted", false}},
+                                        json{{"uuid", "link-del"}, {"deleted", true}}})},
+        {"account", json::array({json{{"uuid", "acc"}, {"deleted", true}}})},
+    };
+    auto in = link_cascade_inputs(changes);
+    CHECK(in.deleted_operations == std::vector<std::string>{"op-del"});
+    CHECK(in.live_links == (std::vector<std::string>{"link-live", "link-false"}));
+    CHECK(!in.empty());
+}
+
+TEST(link_cascade_inputs_is_empty_without_deletes_or_links) {
+    using nlohmann::json;
+    using sync_repo::link_cascade_inputs;
+    CHECK(link_cascade_inputs(json::object()).empty());
+    CHECK(link_cascade_inputs(json::array()).empty());
+    CHECK(link_cascade_inputs(json{{"operation", json::object()}}).empty());
+    CHECK(link_cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}}})}}).empty());
+    // Не-булево deleted не бросает и не считается удалением.
+    CHECK(link_cascade_inputs(json{{"operation", json::array({json{{"uuid", "op"}, {"deleted", "yes"}}})}})
+              .deleted_operations.empty());
+}
+
+TEST(pg_array_literal_joins_values_in_braces) {
+    using sync_repo::pg_array_literal;
+    CHECK_EQ(pg_array_literal({}), std::string("{}"));
+    CHECK_EQ(pg_array_literal({"a"}), std::string("{a}"));
+    CHECK_EQ(pg_array_literal({"a", "b"}), std::string("{a,b}"));
+}
+
 // --- Необязательные колонки push (change currency-ui-tweaks, design D2) ---
 
 namespace {
