@@ -8,9 +8,14 @@
 -- живёт здесь одним местом: актив — кошелёк, у которого живы account,
 -- account_operating и account_asset. Колонки — в конце: так CREATE OR REPLACE
 -- VIEW их допускает.
+--
+-- counterparty_uuid (debts, миграция 000036) — контрагент из ЖИВОЙ строки
+-- account_debt (LEFT JOIN); NULL — кошелёк не долговой. Тот же приём: долговой
+-- кошелёк — тот, у которого живы account, account_operating и account_debt.
 CREATE VIEW v_account_operating AS
 SELECT a.uuid, a.ledger_id, a.name, a.comment, a.icon_uuid, a.is_archived, ao.currency_uuid,
-       aa.asset_type, aa.include_in_net_worth
+       aa.asset_type, aa.include_in_net_worth,
+       ad.counterparty_uuid
   FROM account a
   JOIN account_operating ao
     ON ao.ledger_id = a.ledger_id
@@ -19,5 +24,9 @@ SELECT a.uuid, a.ledger_id, a.name, a.comment, a.icon_uuid, a.is_archived, ao.cu
     ON aa.ledger_id  = a.ledger_id
    AND aa.uuid       = a.uuid
    AND aa.deleted_at IS NULL
+  LEFT JOIN account_debt ad
+    ON ad.ledger_id  = a.ledger_id
+   AND ad.uuid       = a.uuid
+   AND ad.deleted_at IS NULL
  WHERE a.deleted_at IS NULL
    AND ao.deleted_at IS NULL;

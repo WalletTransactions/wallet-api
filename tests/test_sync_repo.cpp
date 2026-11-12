@@ -155,7 +155,8 @@ TEST(only_amount_and_rate_tables_have_numeric_columns) {
 }
 
 TEST(ledger_data_tables_have_ledger_only_scope) {
-    for (const char* name : {"account", "account_operating", "account_asset", "operation", "operation_link"}) {
+    for (const char* name : {"account", "account_operating", "account_asset", "counterparty", "account_debt",
+                             "operation", "operation_link"}) {
         const TableSpec* t = find(push_tables(), name);
         REQUIRE(t != nullptr);
         CHECK(t->scope == Scope::LedgerOnly);
@@ -169,6 +170,23 @@ TEST(account_asset_requires_all_business_columns) {
     CHECK(t->columns == std::vector<std::string>({"asset_type", "include_in_net_worth", "comment"}));
     CHECK(t->optional_columns.empty());
     CHECK(t->numeric_columns.empty());
+}
+
+TEST(counterparty_and_account_debt_columns_match_design) {
+    // change debts, design D1–D3: icon_uuid и due_date — необязательные, с NULL.
+    const TableSpec* cp = find(push_tables(), "counterparty");
+    REQUIRE(cp != nullptr);
+    CHECK(cp->columns == std::vector<std::string>({"name", "comment", "icon_uuid", "is_archived"}));
+    CHECK(cp->optional_columns == std::vector<std::string>({"icon_uuid"}));
+    CHECK(sync_repo::optional_kind(*cp, "icon_uuid") == sync_repo::OptionalKind::Uuid);
+
+    const TableSpec* debt = find(push_tables(), "account_debt");
+    REQUIRE(debt != nullptr);
+    CHECK(debt->columns == std::vector<std::string>({"counterparty_uuid", "comment", "due_date"}));
+    CHECK(debt->optional_columns == std::vector<std::string>({"due_date"}));
+    CHECK(sync_repo::optional_kind(*debt, "due_date") == sync_repo::OptionalKind::Date);
+    CHECK(debt->numeric_columns.empty());
+    CHECK(debt->date_only_columns.empty());
 }
 
 TEST(apply_order_covers_push_tables_and_puts_parents_first) {
@@ -186,6 +204,14 @@ TEST(apply_order_covers_push_tables_and_puts_parents_first) {
         CHECK(pos(ref.parent) < pos(ref.child));
     }
     CHECK_EQ(pos("account_asset"), pos("account_operating") + 1);
+    // change debts, spec sync-push: account_asset → counterparty → account_debt → operation.
+    CHECK_EQ(pos("counterparty"), pos("account_asset") + 1);
+    CHECK_EQ(pos("account_debt"), pos("counterparty") + 1);
+    CHECK_EQ(pos("operation"), pos("account_debt") + 1);
+    const std::vector<std::string> expected = {
+        "icon", "currency", "currency_pair", "currency_pair_rate", "currency_conversion", "account",
+        "account_operating", "account_asset", "counterparty", "account_debt", "operation", "operation_link"};
+    CHECK(order == expected);
 }
 
 TEST(reference_tables_have_reference_or_ledger_scope) {
@@ -296,7 +322,7 @@ bool references(const std::string& child, const std::string& column, const std::
 } // namespace
 
 TEST(cascade_rules_follow_sync_table_refs) {
-    CHECK_EQ(sync_repo::cascade_rules().size(), 2u);
+    CHECK_EQ(sync_repo::cascade_rules().size(), 3u);
     for (const auto& rule : sync_repo::cascade_rules()) {
         CHECK(find(push_tables(), rule.child) != nullptr);
         for (const auto& p : rule.parents) {
@@ -338,6 +364,48 @@ TEST(cascade_inputs_for_assets_collect_deleted_wallets_and_live_assets) {
     auto in = sync_repo::cascade_inputs(changes, rule_for("account_asset"));
     CHECK(in.deleted_parents == (std::vector<std::string>{"w1", "w2"}));
     CHECK(in.live_children == std::vector<std::string>{"w4"});
+}
+
+TEST(cascade_inputs_for_debts_collect_deleted_wallets_and_live_debts) {
+    // change debts, design D4: удаление кошелька гасит account_debt, контрагент
+    // родителем не считается.
+    using nlohmann::json;
+    json changes = {
+        {"account", json::array({json{{"uuid", "w1"}, {"deleted", true}}})},
+        {"account_operating", json::array({json{{"uuid", "w2"}, {"deleted", true}}})},
+        {"counterparty", json::array({json{{"uuid", "cp"}, {"deleted", true}}})},
+        {"account_debt", json::array({json{{"uuid", "w3"}}, json{{"uuid", "w4"}, {"deleted", true}}})},
+    };
+    auto in = sync_repo::cascade_inputs(changes, rule_for("account_debt"));
+    CHECK(in.deleted_parents == (std::vector<std::string>{"w2", "w1"}));
+    CHECK(in.live_children == std::vector<std::string>{"w3"});
+
+    std::string sql = sync_repo::build_cascade_sql(rule_for("account_debt"));
+    CHECK(sql_has(sql, "UPDATE account_debt c SET deleted_at = now()"));
+    CHECK(sql_has(sql, "FROM account_operating p WHERE"));
+    CHECK(sql_has(sql, "FROM account p WHERE"));
+    CHECK(!sql_has(sql, "counterparty p"));
+}
+
+TEST(deleted_uuids_collects_only_deleted_rows_of_table) {
+    using nlohmann::json;
+    json changes = {
+        {"counterparty", json::array({json{{"uuid", "a"}, {"deleted", true}}, json{{"uuid", "b"}},
+                                      json{{"uuid", "c"}, {"deleted", "yes"}}, json{{"deleted", true}},
+                                      json{{"uuid", "a"}, {"deleted", true}}})},
+        {"account", json::array({json{{"uuid", "x"}, {"deleted", true}}})},
+    };
+    CHECK(sync_repo::deleted_uuids(changes, "counterparty") == std::vector<std::string>{"a"});
+    CHECK(sync_repo::deleted_uuids(changes, "account_debt").empty());
+    CHECK(sync_repo::deleted_uuids(json::array(), "counterparty").empty());
+}
+
+TEST(counterparty_in_use_sql_checks_live_debts_of_deleted_counterparties) {
+    std::string sql = sync_repo::counterparty_in_use_sql();
+    CHECK(sql_has(sql, "FROM counterparty c"));
+    CHECK(sql_has(sql, "c.uuid = ANY($2::uuid[])"));
+    CHECK(sql_has(sql, "c.deleted_at IS NOT NULL"));
+    CHECK(sql_has(sql, "d.counterparty_uuid = c.uuid AND d.deleted_at IS NULL"));
 }
 
 TEST(cascade_inputs_is_empty_without_deletes_or_children) {
@@ -402,16 +470,114 @@ TEST(optional_columns_is_always_a_subset_of_columns) {
     }
 }
 
-TEST(only_currency_show_in_equivalent_is_optional) {
-    // account.kind и прочие бизнес-колонки остаются обязательными (design D3).
+TEST(only_known_columns_are_optional) {
+    // account.kind и прочие бизнес-колонки остаются обязательными (design D3
+    // currency-ui-tweaks); необязательные — show_in_equivalent и две колонки
+    // с NULL из change debts (design D3).
     for (const auto& t : push_tables()) {
         if (t.name == "currency") {
-            std::vector<std::string> expected = {"show_in_equivalent"};
-            CHECK(t.optional_columns == expected);
+            CHECK(t.optional_columns == std::vector<std::string>({"show_in_equivalent"}));
+            CHECK(t.optional_kinds.empty());
+        } else if (t.name == "counterparty") {
+            CHECK(t.optional_columns == std::vector<std::string>({"icon_uuid"}));
+        } else if (t.name == "account_debt") {
+            CHECK(t.optional_columns == std::vector<std::string>({"due_date"}));
         } else {
             CHECK(t.optional_columns.empty());
         }
+        for (const auto& [col, kind] : t.optional_kinds) {
+            (void)kind;
+            CHECK(std::find(t.optional_columns.begin(), t.optional_columns.end(), col) != t.optional_columns.end());
+        }
     }
+}
+
+namespace {
+
+nlohmann::json debt_row() {
+    return nlohmann::json{{"uuid", "33333333-3333-3333-3333-333333333333"},
+                          {"counterparty_uuid", "44444444-4444-4444-4444-444444444444"},
+                          {"comment", "заём"}};
+}
+
+std::string invalid_row_detail(const TableSpec& spec, const nlohmann::json& row) {
+    try {
+        sync_repo::build_upsert(spec, "ledger", "device", 7, row);
+    } catch (const sync_repo::InvalidRow& e) {
+        return e.detail;
+    }
+    return "";
+}
+
+} // namespace
+
+TEST(build_upsert_debt_without_due_date_omits_column) {
+    const TableSpec* debt = find(push_tables(), "account_debt");
+    REQUIRE(debt != nullptr);
+    auto q = sync_repo::build_upsert(*debt, "ledger", "device", 7, debt_row());
+    CHECK(!has(q.insert_sql, "due_date"));
+    CHECK(!has(q.update_set, "due_date"));
+    CHECK_EQ(q.params.size(), static_cast<std::size_t>(7));
+}
+
+TEST(build_upsert_debt_due_date_value_and_null_go_through_nullif) {
+    const TableSpec* debt = find(push_tables(), "account_debt");
+    REQUIRE(debt != nullptr);
+    auto row = debt_row();
+    row["due_date"] = "2026-12-31";
+    auto q = sync_repo::build_upsert(*debt, "ledger", "device", 7, row);
+    CHECK(has(q.insert_sql, ", due_date) VALUES"));
+    CHECK(has(q.insert_sql, "NULLIF($8, '')::date"));
+    CHECK(has(q.update_set, "due_date = EXCLUDED.due_date"));
+    REQUIRE(q.params.size() == static_cast<std::size_t>(8));
+    CHECK_EQ(q.params.back(), std::string("2026-12-31"));
+
+    row["due_date"] = nullptr; // явный null — снять срок
+    auto cleared = sync_repo::build_upsert(*debt, "ledger", "device", 7, row);
+    REQUIRE(cleared.params.size() == static_cast<std::size_t>(8));
+    CHECK_EQ(cleared.params.back(), std::string(""));
+    CHECK(has(cleared.insert_sql, "NULLIF($8, '')::date"));
+}
+
+TEST(build_upsert_rejects_bad_due_date_naming_field) {
+    const TableSpec* debt = find(push_tables(), "account_debt");
+    REQUIRE(debt != nullptr);
+    for (const nlohmann::json& bad : {nlohmann::json("завтра"), nlohmann::json("2026-02-30"), nlohmann::json("2026-13-01"),
+                                      nlohmann::json("2026-12-31T00:00:00"), nlohmann::json(20261231),
+                                      nlohmann::json(true), nlohmann::json("")}) {
+        auto row = debt_row();
+        row["due_date"] = bad;
+        CHECK(has(invalid_row_detail(*debt, row), "due_date"));
+    }
+    auto leap = debt_row();
+    leap["due_date"] = "2028-02-29";
+    CHECK_EQ(invalid_row_detail(*debt, leap), std::string(""));
+}
+
+TEST(build_upsert_counterparty_icon_uuid_is_nullable_uuid) {
+    const TableSpec* cp = find(push_tables(), "counterparty");
+    REQUIRE(cp != nullptr);
+    nlohmann::json row = {{"uuid", "55555555-5555-5555-5555-555555555555"},
+                          {"name", "Вася"},
+                          {"comment", ""},
+                          {"is_archived", false}};
+    auto absent = sync_repo::build_upsert(*cp, "ledger", "device", 7, row);
+    CHECK(!has(absent.insert_sql, "icon_uuid"));
+
+    row["icon_uuid"] = nullptr;
+    auto null_icon = sync_repo::build_upsert(*cp, "ledger", "device", 7, row);
+    CHECK(has(null_icon.insert_sql, "NULLIF($8, '')::uuid"));
+
+    row["icon_uuid"] = "66666666-6666-6666-6666-666666666666";
+    CHECK_EQ(invalid_row_detail(*cp, row), std::string(""));
+    row["icon_uuid"] = "не uuid";
+    CHECK(has(invalid_row_detail(*cp, row), "icon_uuid"));
+    row["icon_uuid"] = 5;
+    CHECK(has(invalid_row_detail(*cp, row), "icon_uuid"));
+    // Обязательная is_archived по-прежнему обязательна.
+    row["icon_uuid"] = nullptr;
+    row.erase("is_archived");
+    CHECK_THROWS(sync_repo::build_upsert(*cp, "ledger", "device", 7, row));
 }
 
 TEST(build_upsert_omits_absent_optional_column_everywhere) {

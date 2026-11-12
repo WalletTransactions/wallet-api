@@ -88,7 +88,8 @@
 -- wallet-api/migrations/000007_operations.up.sql и
 -- 000020_operations_pagination.up.sql, 000027_operations_filters.up.sql,
 -- 000030_category_month_analytics.up.sql,
--- 000032_operations_text_variants.up.sql, 000033_capital_assets.up.sql (см.
+-- 000032_operations_text_variants.up.sql, 000033_capital_assets.up.sql,
+-- 000036_debts.up.sql (см.
 -- ../../README.md про этот принцип); этот файл — читаемое зеркало ТЕКУЩЕГО
 -- состояния (после всех).
 --
@@ -96,6 +97,14 @@
 -- сторон проводки — счёт с system_kind = 3 («Переоценка»), без фильтра
 -- deleted_at. Категория — «Переоценка», кошелёк — актив, как у
 -- дохода/расхода. См. README.md, «Переоценка».
+--
+-- kind = 'debt' (000036, debts) — вторая ветка: прямой перевод (обе стороны —
+-- живые кошельки), ровно одна сторона которого — долговой кошелёк (живая
+-- строка account_debt). Перевод между двумя долговыми и проводки «долговой
+-- кошелёк ↔ категория» (прощение, проценты, ноги разновалютного перевода
+-- через Transfer) сохраняют прежний вид. Категории и кошелька у 'debt' нет,
+-- как у transfer. Подпись «Дал / Взял / Вернул» сервер не хранит — её
+-- вычисляет клиент по накопленному балансу. См. README.md, «Долги».
 CREATE FUNCTION f_operations_for_period(
     p_ledger_id              uuid,
     p_from                   timestamp,
@@ -140,6 +149,13 @@ AS $$
                              WHERE r.ledger_id = p_ledger_id
                                AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
                                AND r.system_kind = 3)                    THEN 'revaluation'
+                WHEN o.acc_from_is_operating AND o.acc_to_is_operating
+                 AND EXISTS (SELECT 1 FROM account_debt d
+                              WHERE d.ledger_id = p_ledger_id AND d.uuid = o.acc_fr_uuid
+                                AND d.deleted_at IS NULL)
+                  <> EXISTS (SELECT 1 FROM account_debt d
+                              WHERE d.ledger_id = p_ledger_id AND d.uuid = o.acc_to_uuid
+                                AND d.deleted_at IS NULL)                THEN 'debt'
                 WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                 WHEN o.acc_from_is_operating                           THEN 'expense'
                 ELSE                                                        'income' END,
@@ -186,6 +202,13 @@ AS $$
                                  WHERE r.ledger_id = p_ledger_id
                                    AND r.uuid IN (o.acc_fr_uuid, o.acc_to_uuid)
                                    AND r.system_kind = 3)                    THEN 'revaluation'
+                    WHEN o.acc_from_is_operating AND o.acc_to_is_operating
+                     AND EXISTS (SELECT 1 FROM account_debt d
+                                  WHERE d.ledger_id = p_ledger_id AND d.uuid = o.acc_fr_uuid
+                                    AND d.deleted_at IS NULL)
+                      <> EXISTS (SELECT 1 FROM account_debt d
+                                  WHERE d.ledger_id = p_ledger_id AND d.uuid = o.acc_to_uuid
+                                    AND d.deleted_at IS NULL)                THEN 'debt'
                     WHEN o.acc_from_is_operating AND o.acc_to_is_operating THEN 'transfer'
                     WHEN o.acc_from_is_operating                           THEN 'expense'
                     ELSE                                                        'income' END = p_kind)
@@ -200,4 +223,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION f_operations_for_period(uuid, timestamp, timestamp, uuid, integer, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[]) IS
-    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, исключённые категории, кошельки, kind, подстрока комментария q или любой из вариантов p_qs) до курсора и LIMIT. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграции 000027, 000030, 000032.';
+    'Лента операций периода с курсором (date, uuid) и фильтрами (категории, исключённые категории, кошельки, kind, подстрока комментария q или любой из вариантов p_qs) до курсора и LIMIT. kind: revaluation, debt (прямой перевод, ровно одна сторона — долговой кошелёк), transfer, expense, income. Необязательные параметры передаются именованной нотацией, например p_kind => $6; NULL — фильтр не задан. Миграции 000027, 000030, 000032, 000033, 000036.';

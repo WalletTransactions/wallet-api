@@ -52,6 +52,8 @@
 \ir table/account.sql
 \ir table/account_operating.sql
 \ir table/account_asset.sql
+\ir table/counterparty.sql
+\ir table/account_debt.sql
 \ir table/operation.sql
 \ir table/operation_link.sql
 
@@ -95,6 +97,10 @@
 -- "Капитал" (000033, capital-assets) — сводка по активам, опирается на
 -- v_account_operating.asset_type.
 \ir function/f_assets_for_period.sql
+
+-- "Долги" (000036, debts) — сводка по долговым кошелькам, опирается на
+-- account_debt и counterparty.
+\ir function/f_debts_for_period.sql
 
 -- Роли — после всего остального, и порядок здесь тоже вынужденный: гранты идут
 -- по ALL TABLES IN SCHEMA и по конкретным функциям, а это списки, вычисляемые в

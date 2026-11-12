@@ -18,6 +18,14 @@ const std::vector<TableSpec>& push_tables() {
         // все три колонки обязательны — таблица новая, старых клиентов, что
         // слали бы её без поля, нет.
         {"account_asset", Scope::LedgerOnly, {"asset_type", "include_in_net_worth", "comment"}},
+        // Контрагент долгов (change debts, design D1): icon_uuid необязательна
+        // — контрагент без иконки (отсутствие и null — NULL в базе).
+        {"counterparty", Scope::LedgerOnly, {"name", "comment", "icon_uuid", "is_archived"},
+         {}, {}, {}, {}, "", {"icon_uuid"}, {{"icon_uuid", OptionalKind::Uuid}}},
+        // Признак долгового кошелька (change debts, design D2/D3): due_date
+        // необязательна — долг без срока.
+        {"account_debt", Scope::LedgerOnly, {"counterparty_uuid", "comment", "due_date"},
+         {}, {}, {}, {}, "", {"due_date"}, {{"due_date", OptionalKind::Date}}},
         {"operation", Scope::LedgerOnly,
          {"date", "acc_fr_uuid", "acc_to_uuid", "amount", "comment"}, {"amount"}},
         {"operation_link", Scope::LedgerOnly, {"main_uuid", "link_uuid", "type"}},
@@ -73,9 +81,13 @@ const TableSpec* find_spec(const std::vector<TableSpec>& tables, const std::stri
 // Android-клиенте (SyncEngine, применяет pull симметрично) — не совпадение,
 // зависимости одни и те же в обе стороны. account_asset — сразу после
 // account_operating: её FK смотрит на кошелёк, а не на account.
+// counterparty, account_debt (change debts) — после account_asset:
+// account_debt ссылается и на кошелёк, и на контрагента; у контрагента
+// ссылка только на icon.
 constexpr const char* kApplyOrder[] = {
     "icon", "currency", "currency_pair", "currency_pair_rate", "currency_conversion",
-    "account", "account_operating", "account_asset", "operation", "operation_link",
+    "account", "account_operating", "account_asset", "counterparty", "account_debt",
+    "operation", "operation_link",
 };
 
 // JSON -> текстовый параметр SQL. Суммы/курсы приходят СТРОКАМИ уже на
@@ -98,7 +110,37 @@ bool contains(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
 }
 
+bool is_uuid(const std::string& s) {
+    static const std::regex kUuid(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+    return std::regex_match(s, kUuid);
+}
+
+// Календарная дата строго "yyyy-MM-dd" — то, что Postgres примет как date без
+// ошибки. Проверяется здесь, а не CAST'ом: неверное значение должно дать 400
+// invalid_row с именем поля, а не 22007/22008 и 500.
+bool is_iso_date(const std::string& s) {
+    static const std::regex kDate("^([0-9]{4})-([0-9]{2})-([0-9]{2})$");
+    std::smatch m;
+    if (!std::regex_match(s, m, kDate)) return false;
+    int year = std::stoi(m[1].str());
+    int month = std::stoi(m[2].str());
+    int day = std::stoi(m[3].str());
+    if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+    static const int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    int max_day = kDays[month - 1] + (month == 2 && leap ? 1 : 0);
+    return day <= max_day;
+}
+
 } // namespace
+
+OptionalKind optional_kind(const TableSpec& spec, const std::string& col) {
+    for (const auto& [name, kind] : spec.optional_kinds) {
+        if (name == col) return kind;
+    }
+    return OptionalKind::Boolean;
+}
 
 const std::vector<std::string>& apply_order() {
     static const std::vector<std::string> order(std::begin(kApplyOrder), std::end(kApplyOrder));
@@ -145,10 +187,34 @@ UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, cons
     for (const auto& col : spec.columns) {
         // Необязательная колонка без ключа — вне INSERT (DEFAULT таблицы) и
         // вне обоих SET (прежнее значение), см. TableSpec::optional_columns.
+        // Колонка с NULL (Date/Uuid, change debts): db.hpp передаёт параметры
+        // только текстом, без NULL, поэтому JSON null едет пустой строкой, а
+        // NULLIF(...)::тип превращает её в NULL на границе SQL; непустая строка
+        // к этому моменту уже проверена по формату.
+        std::string nullable_cast;
+        bool is_null = false;
         if (contains(spec.optional_columns, col)) {
             auto it = row.find(col);
             if (it == row.end()) continue;
-            if (!it->is_boolean()) throw InvalidRow{col + ": ожидается boolean"};
+            switch (optional_kind(spec, col)) {
+            case OptionalKind::Boolean:
+                if (!it->is_boolean()) throw InvalidRow{col + ": ожидается boolean"};
+                break;
+            case OptionalKind::Date:
+                if (!it->is_null() && !(it->is_string() && is_iso_date(it->get<std::string>()))) {
+                    throw InvalidRow{col + ": ожидается дата yyyy-MM-dd или null"};
+                }
+                nullable_cast = "date";
+                is_null = it->is_null();
+                break;
+            case OptionalKind::Uuid:
+                if (!it->is_null() && !(it->is_string() && is_uuid(it->get<std::string>()))) {
+                    throw InvalidRow{col + ": ожидается uuid или null"};
+                }
+                nullable_cast = "uuid";
+                is_null = it->is_null();
+                break;
+            }
         }
         bool is_hex = contains(spec.hex_columns, col);
         bool is_date_only = contains(spec.date_only_columns, col);
@@ -159,6 +225,7 @@ UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, cons
         // границе SQL; params всё равно остаётся текстовым (см. db.hpp,
         // почему сырые байты параметром передавать нельзя).
         std::string value_expr = is_hex ? "decode(" + placeholder + ",'hex')" : placeholder;
+        if (!nullable_cast.empty()) value_expr = "NULLIF(" + placeholder + ", '')::" + nullable_cast;
         values_sql += ", " + value_expr;
         // Колонка естественного ключа (conflict_columns) — она же арбитр
         // ON CONFLICT, ей и так гарантированно равны NEW/EXCLUDED в момент
@@ -167,7 +234,7 @@ UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, cons
         bool is_conflict_key = contains(spec.conflict_columns, col);
         if (!is_conflict_key) update_sql += ", " + col + " = EXCLUDED." + col;
         update_by_uuid_sql += ", " + col + " = " + value_expr;
-        std::string param = scalar_to_param(row.at(col));
+        std::string param = is_null ? std::string{} : scalar_to_param(row.at(col));
         // date_only_columns — обрезаем ЯВНО до "yyyy-MM-dd" (10 символов),
         // не полагаясь на неявный CAST text->date (см. TableSpec::
         // date_only_columns, почему): клиент прислал что-то с временем — тот
@@ -265,31 +332,57 @@ void upsert_row(db::Database::Transaction& tx, const TableSpec& spec, const std:
     }
 }
 
-// Пересчитывает конфликты дублирующегося имени счёта заново, читая живую
-// базу (а не сохраняя результат неудачной попытки) — см. sync_repo.hpp,
-// PushOutcome, почему конфликт не кэшируется по batch_id.
-std::vector<Conflict> diagnose_account_conflicts(db::Database& db, const std::string& ledger_id,
-                                                  const json& changes) {
-    std::vector<Conflict> conflicts;
-    if (!changes.contains("account") || !changes.at("account").is_array()) return conflicts;
+// Уникальное имя среди живых строк леджера: таблица, её индекс и выражение
+// нормализации — ТО ЖЕ, что в DDL индекса (иначе «кафе» против выжившей «Кафе»
+// упало бы на индексе, а диагностика не нашла бы existing_uuid). Шаблон
+// применяется дважды: к колонке name и к параметру $2.
+struct UniqueName {
+    const char* table;
+    const char* index;
+    const char* normalize; // printf-подобный шаблон с %s вместо имени
+};
 
-    for (const auto& row : changes.at("account")) {
+constexpr UniqueName kUniqueNames[] = {
+    // 000024: без учёта регистра, «ё» = «е».
+    {"account", "uq_account_name", "lower(translate(%s, 'Ёё', 'Ее'))"},
+    // 000036 (change debts): то же плюс пробелы по краям.
+    {"counterparty", "uq_counterparty_name", "lower(btrim(translate(%s, 'Ёё', 'Ее')))"},
+};
+
+std::string normalized(const char* pattern, const std::string& arg) {
+    std::string out = pattern;
+    auto pos = out.find("%s");
+    return out.replace(pos, 2, arg);
+}
+
+// Пересчитывает конфликты дублирующегося имени заново, читая живую базу (а не
+// сохраняя результат неудачной попытки) — см. sync_repo.hpp, PushOutcome,
+// почему конфликт не кэшируется по batch_id.
+std::vector<Conflict> diagnose_name_conflicts(db::Database& db, const std::string& ledger_id,
+                                              const json& changes, const UniqueName& unique) {
+    std::vector<Conflict> conflicts;
+    if (!changes.contains(unique.table) || !changes.at(unique.table).is_array()) return conflicts;
+
+    std::string sql = std::string("SELECT uuid FROM ") + unique.table + " WHERE ledger_id = $1 AND " +
+                      normalized(unique.normalize, "name") + " = " + normalized(unique.normalize, "$2") +
+                      " AND deleted_at IS NULL AND uuid <> $3";
+    for (const auto& row : changes.at(unique.table)) {
         if (!row.contains("uuid") || !row.contains("name")) continue;
         std::string uuid = row.at("uuid").get<std::string>();
         std::string name = row.at("name").get<std::string>();
-        // Выражение — то же, что у uq_account_name (без учёта регистра, «ё» = «е»):
-        // иначе «кафе» против выжившей «Кафе» упало бы на индексе без existing_uuid.
-        auto res = db.exec(
-            "SELECT uuid FROM account WHERE ledger_id = $1 "
-            "AND lower(translate(name, 'Ёё', 'Ее')) = lower(translate($2, 'Ёё', 'Ее')) "
-            "AND deleted_at IS NULL AND uuid <> $3",
-            {ledger_id, name, uuid});
+        auto res = db.exec(sql, {ledger_id, name, uuid});
         if (!res.rows.empty()) {
-            conflicts.push_back(Conflict{"account", "duplicate_name", uuid, res.rows[0].fields.at(0)});
+            conflicts.push_back(Conflict{unique.table, "duplicate_name", uuid, res.rows[0].fields.at(0)});
         }
     }
     return conflicts;
 }
+
+// Удалённый батчем контрагент, у которого остался живой долг (см.
+// counterparty_in_use_sql). Ловится в push_batch, транзакция откатывается.
+struct CounterpartyInUse {
+    std::string uuid;
+};
 
 // Разбирает foreign_key_violation (23503) в машиночитаемую пару "какой
 // таблицы не хватает / какого uuid" — реальный инцидент 2026-09-13 (см.
@@ -349,11 +442,22 @@ const std::vector<CascadeRule>& cascade_rules() {
     // Родитель здесь — та же ссылка, что в sync_table_refs() (юнит-тест сверяет):
     // связь держится за обе операции, актив — за кошелёк (account_operating) и
     // за сам счёт (тот же uuid; «Удалить данные» на телефоне снимает оба).
+    // account_debt (change debts) — тем же правилом, что актив: мягкое
+    // удаление кошелька гасит его признак долга.
     static const std::vector<CascadeRule> rules = {
         {"operation_link", {{"operation", "main_uuid"}, {"operation", "link_uuid"}}},
         {"account_asset", {{"account_operating", "uuid"}, {"account", "uuid"}}},
+        {"account_debt", {{"account_operating", "uuid"}, {"account", "uuid"}}},
     };
     return rules;
+}
+
+std::string counterparty_in_use_sql() {
+    return "SELECT c.uuid FROM counterparty c "
+           "WHERE c.ledger_id = $1 AND c.uuid = ANY($2::uuid[]) AND c.deleted_at IS NOT NULL "
+           "AND EXISTS (SELECT 1 FROM account_debt d WHERE d.ledger_id = c.ledger_id "
+           "AND d.counterparty_uuid = c.uuid AND d.deleted_at IS NULL) "
+           "ORDER BY c.uuid";
 }
 
 namespace {
@@ -388,6 +492,13 @@ CascadeInputs cascade_inputs(const json& changes, const CascadeRule& rule) {
         collect_uuids(changes, parent.table, /*want_deleted=*/true, out.deleted_parents);
     }
     collect_uuids(changes, rule.child, /*want_deleted=*/false, out.live_children);
+    return out;
+}
+
+std::vector<std::string> deleted_uuids(const json& changes, const std::string& table) {
+    std::vector<std::string> out;
+    if (!changes.is_object()) return out;
+    collect_uuids(changes, table, /*want_deleted=*/true, out);
     return out;
 }
 
@@ -451,6 +562,17 @@ void tombstone_children_of_deleted_parents(db::Database::Transaction& tx, const 
     }
 }
 
+// Последний шаг транзакции батча (change debts, design D4): после upsert и
+// каскада — когда долги, снятые этим же батчем (прямо или удалением
+// кошелька), уже мертвы. uuid уже прошли upsert батча — валидны для ::uuid[].
+void reject_counterparties_in_use(db::Database::Transaction& tx, const std::string& ledger_id,
+                                  const json& changes) {
+    auto deleted = deleted_uuids(changes, "counterparty");
+    if (deleted.empty()) return;
+    auto res = tx.exec(counterparty_in_use_sql(), {ledger_id, pg_array_literal(deleted)});
+    if (!res.rows.empty()) throw CounterpartyInUse{res.rows.at(0).fields.at(0)};
+}
+
 } // namespace
 
 PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std::string& device_id,
@@ -487,6 +609,7 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
         // После всех upsert: и удаление родителя, и живой ребёнок могли прийти
         // этим же батчем. Бот (create_only) не удаляет и шлёт только operation.
         if (!create_only) tombstone_children_of_deleted_parents(tx, ledger_id, device_id, seq, changes);
+        if (!create_only) reject_counterparties_in_use(tx, ledger_id, changes);
 
         json response_json = {{"seq", seq}, {"conflicts", json::array()}};
         std::string response_text = response_json.dump();
@@ -510,6 +633,13 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
         // Только в PushMode::CreateOperationsOnly: правка существующей
         // операции этим токеном запрещена (TODO_telegram_tokens.md, «Скоупы»).
         return PushOutcome{403, json{{"error", "operation_exists"}, {"table", e.table}, {"uuid", e.uuid}}.dump()};
+    } catch (const CounterpartyInUse& e) {
+        // Контрагент удалён батчем, а живой долг на него остался (change
+        // debts, design D4) — батч откачен целиком. table/uuid — та же пара,
+        // что у missing_reference: какую строку клиент должен разрешить
+        // (переклеить долги на выжившего контрагента или вернуть ему жизнь).
+        return PushOutcome{409, json{{"error", "counterparty_in_use"}, {"table", "counterparty"}, {"uuid", e.uuid}}
+                                    .dump()};
     } catch (const InvalidRow& e) {
         // Необязательная колонка не того типа (TableSpec::optional_columns) —
         // тот же 400 invalid_row, что у json::exception ниже, батч откачен.
@@ -517,14 +647,21 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
     } catch (const db::QueryError& e) {
         // Транзакция уже откачена (см. db::Database::Transaction — ROLLBACK
         // в деструкторе, если не дошли до commit()).
-        if (e.sqlstate == "23505" && e.constraint_name == "uq_account_name") {
-            auto conflicts = diagnose_account_conflicts(db, ledger_id, changes);
+        for (const auto& unique : kUniqueNames) {
+            if (e.sqlstate != "23505" || e.constraint_name != unique.index) continue;
+            auto conflicts = diagnose_name_conflicts(db, ledger_id, changes, unique);
             json arr = json::array();
             for (const auto& c : conflicts) {
                 arr.push_back({{"table", c.table}, {"reason", c.reason}, {"uuid", c.uuid},
                                 {"existing_uuid", c.existing_uuid}});
             }
-            return PushOutcome{409, json{{"conflicts", arr}}.dump()};
+            json body = {{"conflicts", arr}};
+            // Контрагент (change debts, решение 2026-11-12): тот же conflicts[],
+            // что у счёта (клиент переклеивает строку на existing_uuid), плюс
+            // error — как требует спека debts. Ответ для счёта не меняется:
+            // старые клиенты его уже разбирают.
+            if (std::string(unique.table) == "counterparty") body["error"] = "duplicate_name";
+            return PushOutcome{409, body.dump()};
         }
         if (e.sqlstate == "23505") {
             // Другой уникальный индекс, чем uq_account_name — например,
@@ -834,6 +971,9 @@ const std::vector<TableRef>& sync_table_refs() {
         {"account_operating", {"ledger_id", "uuid"}, "account", {"ledger_id", "uuid"}},
         {"account_operating", {"currency_uuid"}, "currency", {"uuid"}},
         {"account_asset", {"ledger_id", "uuid"}, "account_operating", {"ledger_id", "uuid"}},
+        {"counterparty", {"icon_uuid"}, "icon", {"uuid"}},
+        {"account_debt", {"ledger_id", "uuid"}, "account_operating", {"ledger_id", "uuid"}},
+        {"account_debt", {"ledger_id", "counterparty_uuid"}, "counterparty", {"ledger_id", "uuid"}},
         {"operation", {"ledger_id", "acc_fr_uuid"}, "account", {"ledger_id", "uuid"}},
         {"operation", {"ledger_id", "acc_to_uuid"}, "account", {"ledger_id", "uuid"}},
         {"operation_link", {"ledger_id", "main_uuid"}, "operation", {"ledger_id", "uuid"}},
@@ -851,8 +991,9 @@ const std::vector<TableRef>& sync_table_refs() {
 
 const std::vector<std::string>& purge_order() {
     static const std::vector<std::string> order = {
-        "operation_link", "operation",     "account_asset", "account_operating", "account", "currency_conversion",
-        "currency_pair_rate", "currency_pair", "currency",      "icon",
+        "operation_link",      "operation",          "account_asset", "account_debt", "counterparty",
+        "account_operating",   "account",            "currency_conversion",
+        "currency_pair_rate",  "currency_pair",      "currency",      "icon",
     };
     return order;
 }

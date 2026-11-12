@@ -17,6 +17,14 @@
 // сошлётся на ещё не существующий blob и упадёт `409 missing_reference`
 // (см. push_batch), тем же путём, что и любой другой внешний ключ. Pull `icon` при этом есть — это чтение
 // уже существующих строк, от push независимо.
+//
+// Таблицы синка (push_tables()) и порядок применения батча (apply_order()):
+// icon, currency, currency_pair, currency_pair_rate, currency_conversion,
+// account, account_operating, account_asset, counterparty, account_debt,
+// operation, operation_link. counterparty и account_debt (change debts) —
+// контрагент и признак долгового кошелька; целостность между ними держит
+// push_batch: удаление контрагента с живым долгом — 409 counterparty_in_use,
+// удаление кошелька гасит его account_debt (cascade_rules()).
 #pragma once
 
 #include <cstdint>
@@ -35,6 +43,14 @@ namespace sync_repo {
 // АУТЕНТИФИЦИРОВАННЫЙ ledger_id, что бы ни прислал клиент (см. push_batch).
 // LedgerOnly — общих строк не бывает вообще (данные леджера).
 enum class Scope { LedgerOnly, ReferenceOrLedger };
+
+// Тип значения необязательной колонки (TableSpec::optional_columns).
+// Boolean — значение обязано быть JSON-boolean, null недопустим
+// (currency.show_in_equivalent). Date и Uuid — колонки, допускающие NULL
+// (change debts: account_debt.due_date, counterparty.icon_uuid): JSON null —
+// SQL NULL, строка проверяется по формату ("yyyy-MM-dd" / uuid) ещё до SQL,
+// чтобы неверный тип давал 400 invalid_row с именем поля, а не 500 от Postgres.
+enum class OptionalKind { Boolean, Date, Uuid };
 
 struct TableSpec {
     std::string name;
@@ -104,12 +120,19 @@ struct TableSpec {
     // ключа — колонки нет ни в INSERT (работает DEFAULT таблицы), ни в
     // DO UPDATE SET, ни в UPDATE по uuid (прежнее значение остаётся): «нет
     // ключа» значит «клиент о колонке не знает». Ключ есть — значение обязано
-    // быть JSON-boolean (все необязательные колонки сегодня boolean), иначе
-    // invalid_row с именем поля. Обязательные колонки (account.kind и т. п.)
-    // сюда не входят: у них нет безопасного значения по умолчанию, см.
+    // быть значением своего типа (optional_kinds ниже; по умолчанию boolean),
+    // иначе invalid_row с именем поля. Обязательные колонки (account.kind и
+    // т. п.) сюда не входят: у них нет безопасного значения по умолчанию, см.
     // README, «Необязательные колонки push».
     std::vector<std::string> optional_columns;
+    // Тип необязательной колонки, если он не OptionalKind::Boolean (change
+    // debts): account_debt.due_date — Date, counterparty.icon_uuid — Uuid.
+    // Колонка из optional_columns, которой здесь нет, — Boolean.
+    std::vector<std::pair<std::string, OptionalKind>> optional_kinds;
 };
+
+// Тип необязательной колонки col таблицы spec (Boolean, если не задан).
+OptionalKind optional_kind(const TableSpec& spec, const std::string& col);
 
 // Строка push не годится (сейчас — необязательная колонка не того типа).
 // push_batch отвечает на неё тем же 400 invalid_row, что и на json::exception.
@@ -151,8 +174,8 @@ const std::vector<TableSpec>& pull_tables();
 const std::vector<std::string>& apply_order();
 
 struct Conflict {
-    std::string table;
-    std::string reason;         // "duplicate_name" — единственная причина с осмысленным existing_uuid
+    std::string table;          // "account" или "counterparty" (change debts)
+    std::string reason;        // "duplicate_name" — единственная причина с осмысленным existing_uuid
     std::string uuid;           // uuid, который прислал КЛИЕНТ в этой строке — без него клиенту
                                  // нечем понять, какую свою локальную строку переклеивать на existing_uuid
                                  // (несколько строк одной таблицы могут конфликтовать в одном батче)
@@ -218,8 +241,22 @@ struct CascadeRule {
     std::vector<CascadeParent> parents;
 };
 // operation_link ← operation (main_uuid, link_uuid);
-// account_asset ← account_operating, account (uuid — общий ключ кошелька).
+// account_asset, account_debt ← account_operating, account (uuid — общий ключ
+// кошелька). Контрагента каскад не трогает (change debts, design D4).
 const std::vector<CascadeRule>& cascade_rules();
+
+// Удаление контрагента с живым долгом (change debts, design D4): после всех
+// upsert и каскада батча — контрагенты, удалённые этим батчем, у которых
+// остался живой account_debt. $1 ledger_id, $2 uuid удалённых батчем
+// контрагентов (::uuid[]); строка на каждого такого контрагента (uuid).
+// Непустой результат — 409 {"error":"counterparty_in_use"}, батч откатывается.
+// Проверка в конце, а не при upsert, — чтобы батч «снять долг и удалить
+// контрагента» (или «удалить кошелёк и контрагента») проходил.
+std::string counterparty_in_use_sql();
+
+// uuid строк таблицы table, пришедших в батче с "deleted": true. Чистая функция
+// ради юнит-тестов; строки без uuid и не-массивы пропускаются.
+std::vector<std::string> deleted_uuids(const nlohmann::json& changes, const std::string& table);
 
 // Что батч приносит для правила: uuid родителей, пришедших с "deleted": true,
 // и uuid детей, пришедших живыми. Чистая функция ради юнит-тестов; строки без

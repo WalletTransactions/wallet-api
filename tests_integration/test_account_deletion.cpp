@@ -138,6 +138,55 @@ TEST(delete_own_account_wipes_ledger_with_own_icon_currency_pair_and_wallet) {
 
 // Жёсткий DELETE используемой валюты вне delete_own_account по-прежнему
 // отклоняется сразу: ключ DEFERRABLE, но INITIALLY IMMEDIATE.
+// change debts, задача 3.6: контрагенты (в том числе со своей иконкой
+// леджера) и долговые кошельки уходят вместе с леджером. Каскад идёт двумя
+// ветками — ledger → counterparty и ledger → account → account_operating →
+// account_debt, — поэтому fk_account_debt_counterparty и fk_counterparty_icon
+// отложены до COMMIT (account_deletion_repo).
+TEST(delete_own_account_wipes_ledger_with_counterparties_and_debts) {
+    auto db = fixture::open();
+    auto owner = fixture::make_identity(*db);
+
+    auto shared_icon = fixture::make_reference_icon_with_sha256(*db);
+    std::string own_icon = uuidgen::v4();
+    auto icon_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO icon (uuid, ledger_id, seq, name, content_sha256, icon_type) "
+             "VALUES ($1, $2, $3, $4, decode($5, 'hex'), 0)",
+             {own_icon, owner.ledger_id, icon_seq.rows.at(0).fields.at(0), "own-icon-" + own_icon,
+              shared_icon.sha256_hex});
+    std::string currency = fixture::make_currency(*db, owner.ledger_id, own_icon);
+
+    std::string counterparty = uuidgen::v4();
+    std::string archived = uuidgen::v4();
+    auto cp_seq = db->exec("SELECT next_seq($1)", {owner.ledger_id});
+    db->exec("INSERT INTO counterparty (uuid, ledger_id, seq, name, icon_uuid) VALUES ($1, $2, $3, $4, $5)",
+             {counterparty, owner.ledger_id, cp_seq.rows.at(0).fields.at(0), "Вася " + counterparty, own_icon});
+    db->exec("INSERT INTO counterparty (uuid, ledger_id, seq, name, is_archived, deleted_at) "
+             "VALUES ($1, $2, $3, $4, true, now())",
+             {archived, owner.ledger_id, cp_seq.rows.at(0).fields.at(0), "Петя " + archived});
+
+    std::string loan1 = add_account(*db, owner.ledger_id, own_icon);
+    std::string loan2 = add_account(*db, owner.ledger_id, own_icon);
+    for (const auto& wallet : {loan1, loan2}) {
+        auto seq = db->exec("SELECT next_seq($1)", {owner.ledger_id}).rows.at(0).fields.at(0);
+        db->exec("INSERT INTO account_operating (uuid, ledger_id, seq, currency_uuid) VALUES ($1, $2, $3, $4)",
+                 {wallet, owner.ledger_id, seq, currency});
+        db->exec("INSERT INTO account_debt (uuid, ledger_id, seq, counterparty_uuid, due_date) "
+                 "VALUES ($1, $2, $3, $4, '2026-12-31')",
+                 {wallet, owner.ledger_id, seq, counterparty});
+    }
+
+    auto status = account_deletion_repo::delete_own_account(*db, owner.user_id);
+    REQUIRE(status == account_deletion_repo::DeleteStatus::kOk);
+
+    CHECK(!ledger_exists(*db, owner.ledger_id));
+    CHECK(db->exec("SELECT 1 FROM account_debt WHERE ledger_id = $1", {owner.ledger_id}).rows.empty());
+    CHECK(db->exec("SELECT 1 FROM counterparty WHERE ledger_id = $1", {owner.ledger_id}).rows.empty());
+    CHECK(db->exec("SELECT 1 FROM icon WHERE uuid = $1", {own_icon}).rows.empty());
+    CHECK(!change_stream_exists(*db, owner.ledger_id));
+    CHECK(!app_user_exists(*db, owner.user_id));
+}
+
 TEST(hard_delete_of_currency_used_by_wallet_is_still_rejected) {
     auto db = fixture::open();
     auto owner = fixture::make_identity(*db);

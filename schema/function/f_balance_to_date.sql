@@ -47,7 +47,10 @@ CREATE FUNCTION f_balance_to_date(
     -- capital-assets (000033): признак актива из v_account_operating; NULL —
     -- ликвидный кошелёк (и пустой бакет f_balance_series).
     asset_type           smallint,
-    include_in_net_worth boolean
+    include_in_net_worth boolean,
+    -- debts (000036): контрагент долгового кошелька; NULL — не долговой
+    -- (и пустой бакет f_balance_series).
+    counterparty_uuid    uuid
 )
     LANGUAGE sql
     STABLE
@@ -63,7 +66,8 @@ AS $$
                  (SELECT eq."precision" FROM currency eq WHERE eq.uuid = p_eq_currency))
                AS eq_value,
            vao.asset_type,
-           vao.include_in_net_worth
+           vao.include_in_net_worth,
+           vao.counterparty_uuid
       FROM v_account_operating vao
       JOIN currency c
         ON c.uuid = vao.currency_uuid
