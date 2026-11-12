@@ -2,14 +2,14 @@
 
 ## 1. Сверка с параллельными changes
 
-- [ ] 1.1 Выбрать номер миграции — следующий свободный в `migrations/` (сейчас после `000035`) с учётом `partition-operation-by-ledger`; взять текущие определения `v_account_operating`, `f_balance_to_date`, `f_balance_to_dates`, `f_balance_series`, `f_operations_for_period` из последней миграции, которая их задавала. Проверка: в описании PR перечислены номер и миграции-источники каждого определения.
+- [x] 1.1 Выбрать номер миграции — следующий свободный в `migrations/` (сейчас после `000035`) с учётом `partition-operation-by-ledger`; взять текущие определения `v_account_operating`, `f_balance_to_date`, `f_balance_to_dates`, `f_balance_series`, `f_operations_for_period` из последней миграции, которая их задавала. Проверка: в описании PR перечислены номер и миграции-источники каждого определения.
 
 ## 2. Схема: таблицы и признак
 
-- [ ] 2.1 В миграции `0000NN_debts.up.sql`: `CREATE TABLE counterparty` (колонки синка, `name`, `comment`, `icon_uuid NULL`, `is_archived`, PK `(ledger_id, uuid)`, индекс `(ledger_id, seq)`, `set_updated_at`, уникальный индекс по `lower(btrim(name))` среди живых, `COMMENT ON`) и `CREATE TABLE account_debt` (колонки синка, `counterparty_uuid` с составным FK, `comment`, `due_date date NULL`, PK, FK на `account_operating ON DELETE CASCADE`, индексы, триггер, `COMMENT ON`), без уникальности «контрагент + валюта». Проверка: `migrate up` на чистой базе test проходит, `\d counterparty` и `\d account_debt` совпадают с design D1/D2.
-- [ ] 2.2 `.down.sql`: вернуть прежние определения вида и функций, `DROP TABLE account_debt, counterparty`. Проверка: `up → down → up` на базе без строк в новых таблицах проходит без ошибок.
-- [ ] 2.3 Зеркала: `schema/table/counterparty.sql`, `schema/table/account_debt.sql`, разделы в `schema/table/README.md`, строки в `schema/apply.sql`. Проверка: `schema/apply.sql` на пустой базе даёт ту же схему, что миграции (сравнение `pg_dump --schema-only`).
-- [ ] 2.4 В миграции явный `GRANT SELECT` на обе таблицы роли `wallet_reader` (нужен wallet-report для `LEFT JOIN`); строки и комментарий в `schema/role/wallet_reader.sql`. Проверка: `SET ROLE wallet_reader; SELECT * FROM account_debt` на test проходит, `INSERT` — отказ.
+- [x] 2.1 В миграции `0000NN_debts.up.sql`: `CREATE TABLE counterparty` (колонки синка, `name`, `comment`, `icon_uuid NULL`, `is_archived`, PK `(ledger_id, uuid)`, индекс `(ledger_id, seq)`, `set_updated_at`, уникальный индекс по `lower(btrim(name))` среди живых, `COMMENT ON`) и `CREATE TABLE account_debt` (колонки синка, `counterparty_uuid` с составным FK, `comment`, `due_date date NULL`, PK, FK на `account_operating ON DELETE CASCADE`, индексы, триггер, `COMMENT ON`), без уникальности «контрагент + валюта». Проверка: `migrate up` на чистой базе test проходит, `\d counterparty` и `\d account_debt` совпадают с design D1/D2.
+- [x] 2.2 `.down.sql`: вернуть прежние определения вида и функций, `DROP TABLE account_debt, counterparty`. Проверка: `up → down → up` на базе без строк в новых таблицах проходит без ошибок.
+- [x] 2.3 Зеркала: `schema/table/counterparty.sql`, `schema/table/account_debt.sql`, разделы в `schema/table/README.md`, строки в `schema/apply.sql`. Проверка: `schema/apply.sql` на пустой базе даёт ту же схему, что миграции (сравнение `pg_dump --schema-only`).
+- [x] 2.4 В миграции явный `GRANT SELECT` на обе таблицы роли `wallet_reader` (нужен wallet-report для `LEFT JOIN`); строки и комментарий в `schema/role/wallet_reader.sql`. Проверка: `SET ROLE wallet_reader; SELECT * FROM account_debt` на test проходит, `INSERT` — отказ.
 - [ ] 2.5 Каскад tombstone: мягкое удаление кошелька гасит его `account_debt` (по образцу `000035` для `account_asset`, включая разовую чистку уже осиротевших строк). Проверка: интеграционный тест — после мягкого удаления кошелька `account_debt` отдаётся в pull с `deleted_at`.
 
 ## 3. Синк
@@ -39,6 +39,13 @@
 
 - [ ] 6.1 На реальных выгрузках `tools/moneylover/MoneyLover-*.csv` выяснить, как `Debt`, `Loan`, `Debt Collection` соотносятся с направлением (расход/доход) и что лежит в поле «with». Проверка: таблица соответствий в `tools/moneylover/README.md`.
 - [ ] 6.2 `tools/moneylover/csv_export.py`: три категории — в долговые кошельки; контрагент из «with», иначе из заметки; направление по 6.1. Проверка: прогон на `MoneyLover-2026-11-09.csv` — число долговых кошельков и баланс по каждому совпадают с ручным расчётом по выгрузке.
+
+## Примечания к выполнению
+
+- 1.1 — номер `000036`: у `partition-operation-by-ledger` миграции ещё нет. Источник всех прежних определений (`v_account_operating`, `f_balance_to_date`, `f_balance_to_dates`, `f_balance_series`, `f_operations_for_period`, `f_operations_total`) — `000033`; записано в шапке `000036_debts.up.sql` (PR не открывался — перенести в описание PR при открытии).
+- 2.1–2.4 — проверено на одноразовом `postgres:16-alpine` (не на базе test): `migrate goto 35 → up → down 1 → up`, `pg_dump --schema-only` после `down` совпадает с дампом до `up`, после повторного `up` — с первым `up` (расходятся только случайные метки `\restrict`). `apply.sql` на пустой базе — тела функций, вид, ACL, комментарии функций и DDL обеих таблиц совпадают с миграциями. `SET ROLE wallet_reader`: `SELECT` из обеих таблиц и `f_debts_for_period` проходит, `INSERT` — `permission denied`.
+- 2.1 — уникальный индекс имени — `lower(btrim(translate(name, 'Ёё', 'Ее')))`, а не `lower(btrim(name))` из design D1: правило `uq_account_name` плюс `btrim` (решение владельца 2026-11-12). `icon_uuid` — FK на `icon` (решение владельца 2026-11-12). Ссылки `fk_counterparty_icon`, `fk_account_debt_counterparty` — `DEFERRABLE INITIALLY IMMEDIATE` и отложены в `account_deletion_repo` (иначе удаление леджера падает на вложенном каскаде, как до `000025`).
+- 2.5 — разовой чистки осиротевших строк нет: таблица создаётся той же миграцией, строк в ней ещё нет. Каскад — правилом `cascade_rules()` в `push_batch`, как у `account_asset`.
 
 ## Workflow follow-up
 

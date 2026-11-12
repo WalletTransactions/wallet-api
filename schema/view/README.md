@@ -61,6 +61,8 @@ account JOIN account_operating ON (ledger_id, uuid)
 | --- | --- |
 | `ledger_id`, `uuid`, `name`, `comment`, `icon_uuid`, `is_archived` | `account` |
 | `currency_uuid` | `account_operating` |
+| `asset_type`, `include_in_net_worth` | живая строка `account_asset` (`LEFT JOIN`, 000033); `NULL` — не актив |
+| `counterparty_uuid` | живая строка `account_debt` (`LEFT JOIN`, 000036, change `debts`); `NULL` — не долговой кошелёк |
 
 ## `v_account_expanse`
 
