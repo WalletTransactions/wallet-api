@@ -32,7 +32,7 @@
 
 ## 5. Парные изменения и выкат
 
-- [ ] 5.1 Сообщить в парный change wallet-report порядок `counterparty`, `account_debt` в `kApplyOrder` (его тестовая копия `sync_repo.cpp` должна совпадать) и имена колонок `f_debts_for_period`. Проверка: ссылка на design D7 в design wallet-report.
+- [x] 5.1 Сообщить в парный change wallet-report порядок `counterparty`, `account_debt` в `kApplyOrder` (его тестовая копия `sync_repo.cpp` должна совпадать) и имена колонок `f_debts_for_period`. Проверка: ссылка на design D7 в design wallet-report.
 - [ ] 5.2 Выкат на test: миграция и wallet-api раньше APK. Проверка: `env-deploy`, интеграционные тесты wallet-api и wallet-report на test зелёные.
 
 ## 6. Импорт Money Lover
@@ -51,7 +51,8 @@
 - 3.4–3.6 — интеграционные тесты: сначала тем же бинарём против одноразового `postgres:16-alpine`, затем штатно `tests_integration/run_local.sh` на кластере wallet-test (база `wallet_api_it`, миграции 33–36 накатились, `schema_migrations` = 36, `dirty = f`): 128 тестов, 0 упавших в обоих прогонах.
 - 2.4 на кластере wallet-test (`wallet_api_it`): `SET ROLE wallet_reader` — `SELECT` из `account_debt`, `counterparty` и вызов `f_debts_for_period` проходят, `INSERT INTO account_debt` — `permission denied`. Рабочая база стенда test не трогалась (выкат — задача 5.2).
 - 3.7 — `openapi-spec-validator`: OK. `GET /openapi.yaml` (то, что грузит `/docs`) с собранного `wallet_api` отдаёт `CounterpartyPushRow`/`PullRow`, `AccountDebtPushRow`/`PullRow`, `CounterpartyInUseError`; `GET /docs` — `200`. `DuplicateNameConflict` расширен: `table` ∈ {`account`, `counterparty`}, необязательное `error: duplicate_name`.
-- 5.1, 5.2 — не выполнены в этом запуске: 5.1 — правка design парного change в wallet-report (другой репозиторий, отдельный шаг); 5.2 — выкат на test запрещён заданием этого запуска.
+- 5.1 — сделано в wallet-report (ветка `openspec-debts`): копия `sync_repo.cpp` с `counterparty`, `account_debt` после `account_asset` (тест `sync_apply_order_matches_wallet_api`), отчёт `/debts` поверх `f_debts_for_period` с колонками design D7; design wallet-report ссылается на D5–D7 wallet-api.
+- 5.2 — не выполнена: ждёт мерджа и выката на test.
 - 4.1–4.5 — SQL-тесты — `tests_integration/test_debts_reports.cpp` (6 тестов на одном наборе данных), вместо ручного `SELECT` на test; прогон — тот же, что у 3.4. `counterparty_uuid` в `v_account_operating` проверяется через `f_balance_*` и тесты синка (`view_counterparty`).
 - 4.3 — `kind = 'debt'` строго по спеке: только прямой перевод «кошелёк ↔ кошелёк», ровно одна сторона которого долговая. Ноги разновалютного займа через категорию `Transfer` остаются `expense`/`income` (подтверждено владельцем 2026-11-12). Побочный эффект: `p_kind => 'transfer'` больше не находит долговые переводы — wallet-report должен принять `'debt'` в валидации `kind` (парный change). То же в `f_operations_total`.
 - 4.4 — порядок строк `f_debts_for_period` — `counterparty_name, account_name, account_uuid` (в design не задан). `balance_to` выводится из округлённых частей — тождество точное.
