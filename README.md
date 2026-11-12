@@ -145,10 +145,12 @@ success-странице после логина; см. его README. Полн�
 
 Протокол офлайн-first синка Android-клиента (org/docs/TODO_mobile_sync.md,
 Фаза 2) — домен из `wallet-api/schema/table/` (`account`, `account_operating`,
-`account_asset`, `operation`, `operation_link`, `currency`, `currency_pair`,
-`currency_pair_rate`, `currency_conversion`, `icon`), накатан миграцией
-`wallet-api/migrations/000002_ledger_sync.up.sql` (`account_asset` —
-`000033_capital_assets`, признак капитального актива у кошелька).
+`account_asset`, `counterparty`, `account_debt`, `operation`, `operation_link`,
+`currency`, `currency_pair`, `currency_pair_rate`, `currency_conversion`,
+`icon`), накатан миграцией `wallet-api/migrations/000002_ledger_sync.up.sql`
+(`account_asset` — `000033_capital_assets`, признак капитального актива у
+кошелька; `counterparty` и `account_debt` — `000036_debts`, контрагент и
+признак долгового кошелька).
 
 **Только для мобильного входа.** Оба эндпоинта требуют, чтобы токен нёс
 claim `device_id` (см. README google-auth, "Детали устройства") — у токена
@@ -204,13 +206,22 @@ claim `device_id` (см. README google-auth, "Детали устройства"
 - **Актив удалённого кошелька удаляется сам** (change
   `cascade-asset-tombstones`, миграция 000035): то же правило для
   `account_asset`, у которого удалён `account_operating` или `account` (общий
-  uuid кошелька). Оба каскада — правила `sync_repo::cascade_rules()`.
+  uuid кошелька). То же — для `account_debt` (change `debts`, миграция
+  000036). Все каскады — правила `sync_repo::cascade_rules()`; контрагента
+  каскад не трогает.
+- **Контрагент с живым долгом не удаляется** (change `debts`): если после
+  всех upsert и каскада батча у контрагента, удалённого этим батчем, остался
+  живой `account_debt`, — `409
+  {"error":"counterparty_in_use","table":"counterparty","uuid":"..."}`, батч
+  откачен. Проверка — последний шаг транзакции, поэтому «снять долг (или
+  удалить кошелёк) и удалить контрагента» одним батчем проходит.
 - Порядок применения таблиц батча — не порядок ключей в JSON, а
   `sync_repo::apply_order()`: `icon`, `currency`, `currency_pair`,
   `currency_pair_rate`, `currency_conversion`, `account`,
-  `account_operating`, `account_asset`, `operation`, `operation_link` —
-  каждая после тех, на которые ссылается (тот же порядок, что `TABLE_ORDER`
-  Android `SyncEngine`).
+  `account_operating`, `account_asset`, `counterparty`, `account_debt`,
+  `operation`, `operation_link` — каждая после тех, на которые ссылается
+  (тот же порядок, что `TABLE_ORDER` Android `SyncEngine` и тестовая копия
+  в wallet-report).
 - Значение вне закрытого набора (`account.system_kind` вне 0–3,
   `account_asset.asset_type` вне 1–3 — нарушение CHECK, `23514`) — `400
   invalid_row`, как и отсутствующее обязательное поле, не `500`.
@@ -233,6 +244,10 @@ claim `device_id` (см. README google-auth, "Детали устройства"
   понять, какую из СВОИХ локальных строк переклеивать, если в одном батче
   конфликтует не один счёт). Клиент обязан переклеить операции на `existing_uuid` и повторить батч (см.
   `wallet-api/schema/table/README.md`, раздел `account`).
+- Конфликт имени контрагента (`uq_counterparty_name`, без учёта регистра,
+  пробелов по краям и «ё»/«е») — тот же `conflicts[]` с `"table":"counterparty"`
+  плюс `"error":"duplicate_name"` (change `debts`); разрешение то же —
+  переклеить долги на `existing_uuid`.
 - Идемпотентность — `batch_id` (`sync_push_batch`): повторная отправка ТОГО
   ЖЕ `batch_id` возвращает сохранённый ответ, ничего не применяя заново. В
   кэш кладётся только успешный исход — конфликт пересчитывается заново на
@@ -249,8 +264,11 @@ claim `device_id` (см. README google-auth, "Детали устройства"
   exception"). Транзакция батча откатывается целиком в обоих случаях (RAII
   `db::Database::Transaction`) — 400 просто называет причину внятно, вместо
   того чтобы полагаться на глобальный перехват.
-- **Необязательные колонки push** (`TableSpec::optional_columns`, сегодня
-  только `currency.show_in_equivalent`, миграция 000026). Строка без ключа
+- **Необязательные колонки push** (`TableSpec::optional_columns`:
+  `currency.show_in_equivalent`, миграция 000026; `account_debt.due_date` и
+  `counterparty.icon_uuid`, миграция 000036 — эти две допускают `null`, он
+  записывается как `NULL`, а строка проверяется по формату — `yyyy-MM-dd` /
+  uuid, тип задаёт `TableSpec::optional_kinds`). Строка без ключа
   такой колонки не ошибка: колонки нет ни в `INSERT` (работает `DEFAULT`
   таблицы — у флага `true`), ни в `DO UPDATE SET`, ни в `UPDATE` по uuid —
   у существующей строки прежнее значение остаётся. «Нет ключа» значит
@@ -430,7 +448,7 @@ org/docs/TODO_mobile_sync.md, Фаза 6. `ledger_id` нигде не прини
    больше в `ledger_member`), удаляются целиком: `DELETE FROM ledger`
    каскадом (`ON DELETE CASCADE`, см. `wallet-api/schema/table/*.sql`) сносит
    `ledger_member`/`ledger_invite`/`device`/`account`/`account_operating`/
-   `account_asset`/`operation`/`operation_link`/`sync_push_batch`/`currency`/
+   `account_asset`/`counterparty`/`account_debt`/`operation`/`operation_link`/`sync_push_batch`/`currency`/
    `currency_pair`/`currency_pair_rate` этого леджера — один каскад, не
    десяток ручных `DELETE` в правильном порядке. Следом — `DELETE FROM
    change_stream` (`ledger.id REFERENCES change_stream ON DELETE RESTRICT` —

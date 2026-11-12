@@ -161,9 +161,21 @@ paths:
         Живая `operation_link`, у которой после батча удалена хотя бы одна
         операция (`main_uuid`/`link_uuid`), удаляется сервером в том же батче
         с его `seq` — и когда батч удаляет операцию, и когда присылает живую
-        связь к уже удалённым операциям. Так же удаляется живой
-        `account_asset`, у которого удалён кошелёк (`account_operating`) или
-        сам счёт (`account`). Ответ при этом не меняется.
+        связь к уже удалённым операциям. Так же удаляются живые
+        `account_asset` и `account_debt`, у которых удалён кошелёк
+        (`account_operating`) или сам счёт (`account`). Ответ при этом не
+        меняется.
+
+        Долги (change debts): `counterparty` — контрагент, `account_debt` —
+        признак долгового кошелька. Порядок применения батча: `icon`,
+        `currency`, `currency_pair`, `currency_pair_rate`,
+        `currency_conversion`, `account`, `account_operating`,
+        `account_asset`, `counterparty`, `account_debt`, `operation`,
+        `operation_link` — независимо от порядка ключей в теле. Удаление
+        контрагента, у которого после батча остался живой `account_debt`, —
+        `409 counterparty_in_use`; проверка в конце транзакции, поэтому «снять
+        долг (или удалить кошелёк) и удалить контрагента» одним батчем
+        проходит.
 
         `icon` — обычная таблица в `changes` (метаданные: name/icon_type/
         content_sha256), но само СОДЕРЖИМОЕ (байты) сюда не входит — см.
@@ -202,8 +214,10 @@ paths:
             таблицы колонку (`error: invalid_row` — например, старая версия
             клиента ещё не отправляет колонку, добавленную в протокол
             позже; `detail` называет отсутствующий ключ). Исключение —
-            явно необязательные колонки (`currency.show_in_equivalent`):
-            их отсутствие не ошибка, а неверный тип — `invalid_row`.
+            явно необязательные колонки (`currency.show_in_equivalent`,
+            `account_debt.due_date`, `counterparty.icon_uuid`): их отсутствие
+            не ошибка, а неверный тип (например, `due_date: "завтра"`) —
+            `invalid_row`, `detail` называет поле.
             Значение вне закрытого набора (`account.system_kind` вне 0–3,
             `account_asset.asset_type` вне 1–3 — нарушение CHECK) — тоже
             `invalid_row`, `detail` называет ограничение.
@@ -240,13 +254,16 @@ paths:
         "409":
           description: |
             Батч НЕ применён целиком (одна транзакция — либо всё, либо
-            ничего). Три независимых случая, различаются формой тела:
-            конфликт имени счёта (`conflicts[]`, с `existing_uuid` — можно
-            автоматически разрешить), дубль другого уникального индекса
+            ничего). Четыре независимых случая, различаются формой тела:
+            конфликт имени счёта или контрагента (`conflicts[]`, с
+            `existing_uuid` — можно автоматически разрешить; у контрагента
+            ещё `error: duplicate_name`), дубль другого уникального индекса
             (`error: duplicate_key` — без `existing_uuid`, разрешение не
-            автоматизировано) или неизвестная ссылка (`error:
+            автоматизировано), неизвестная ссылка (`error:
             missing_reference` — например, content_sha256/icon_uuid без
-            предварительной загрузки через `/sync/blobs`).
+            предварительной загрузки через `/sync/blobs`, `account_debt` на
+            категории или на неизвестного контрагента) или удаление
+            контрагента с живым долгом (`error: counterparty_in_use`).
           content:
             application/json:
               schema:
@@ -254,6 +271,7 @@ paths:
                   - $ref: "#/components/schemas/DuplicateNameConflict"
                   - $ref: "#/components/schemas/DuplicateKeyError"
                   - $ref: "#/components/schemas/MissingReferenceError"
+                  - $ref: "#/components/schemas/CounterpartyInUseError"
         "500":
           description: Необработанная ошибка (глобальный exception handler)
           content:
@@ -1394,17 +1412,20 @@ components:
     DuplicateNameConflict:
       type: object
       description: |
-        Конфликт `uq_account_name` (единственная таблица с осмысленной
-        диагностикой сегодня, см. README "Конфликт имени счёта"). Клиент
-        обязан переклеить свои локальные ссылки на `existing_uuid` (у себя —
-        `uuid`, который сам прислал) и повторить батч.
+        Конфликт `uq_account_name` или `uq_counterparty_name` (change debts) —
+        таблицы с осмысленной диагностикой имени, см. README "Конфликт имени
+        счёта". Клиент обязан переклеить свои локальные ссылки на
+        `existing_uuid` (у себя — `uuid`, который сам прислал) и повторить
+        батч. У контрагента в теле ещё `error: duplicate_name`; у счёта поля
+        `error` нет (прежний формат).
       properties:
+        error: {type: string, enum: [duplicate_name], description: "Только у конфликта контрагента"}
         conflicts:
           type: array
           items:
             type: object
             properties:
-              table: {type: string, enum: [account]}
+              table: {type: string, enum: [account, counterparty]}
               reason: {type: string, enum: [duplicate_name]}
               uuid: {type: string, format: uuid, description: "uuid, который прислал сам клиент в конфликтующей строке"}
               existing_uuid: {type: string, format: uuid, description: "uuid уже существующей на сервере строки с тем же именем"}
@@ -1432,6 +1453,19 @@ components:
         detail: {type: string, description: "Текст ошибки Postgres как есть"}
       required: [error, detail]
 
+    CounterpartyInUseError:
+      type: object
+      description: |
+        Батч удаляет контрагента (`counterparty` с `"deleted": true`), а живой
+        `account_debt` на него после применения всего батча остаётся (change
+        debts). Батч откачен. Разрешение — снять долги контрагента (или
+        переклеить их на другого) тем же или предыдущим батчем.
+      properties:
+        error: {type: string, enum: [counterparty_in_use]}
+        table: {type: string, enum: [counterparty]}
+        uuid: {type: string, format: uuid, description: "Контрагент, у которого остался живой долг"}
+      required: [error, table, uuid]
+
     # ── Push: команда на изменение (uuid + бизнес-колонки + deleted) ────────
 
     SyncPushChanges:
@@ -1447,6 +1481,8 @@ components:
         account: {type: array, items: {$ref: "#/components/schemas/AccountPushRow"}}
         account_operating: {type: array, items: {$ref: "#/components/schemas/AccountOperatingPushRow"}}
         account_asset: {type: array, items: {$ref: "#/components/schemas/AccountAssetPushRow"}}
+        counterparty: {type: array, items: {$ref: "#/components/schemas/CounterpartyPushRow"}}
+        account_debt: {type: array, items: {$ref: "#/components/schemas/AccountDebtPushRow"}}
         operation: {type: array, items: {$ref: "#/components/schemas/OperationPushRow"}}
         operation_link: {type: array, items: {$ref: "#/components/schemas/OperationLinkPushRow"}}
         currency: {type: array, items: {$ref: "#/components/schemas/CurrencyPushRow"}}
@@ -1494,6 +1530,45 @@ components:
             include_in_net_worth: {type: boolean, description: "Входит ли оценка актива в итог «всего с капиталом»"}
             comment: {type: string}
           required: [asset_type, include_in_net_worth, comment]
+
+    CounterpartyPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          description: "Контрагент долгов (wallet-api/schema/table/counterparty.sql). Имя уникально среди живых контрагентов леджера без учёта регистра, пробелов по краям и «ё»/«е» — дубль даёт 409 duplicate_name с existing_uuid. Удаление при живом account_debt — 409 counterparty_in_use. Применяется после account_asset, до account_debt."
+          properties:
+            name: {type: string}
+            comment: {type: string}
+            icon_uuid:
+              type: string
+              format: uuid
+              nullable: true
+              description: |
+                Необязательная колонка: ключа нет — у нового контрагента NULL,
+                у существующего прежнее значение; null — без иконки. Неизвестная
+                иконка — 409 missing_reference, не uuid — 400 invalid_row.
+            is_archived: {type: boolean, description: "Признак интерфейса, на долги не влияет"}
+          required: [name, comment, is_archived]
+
+    AccountDebtPushRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPushRowBase"
+        - type: object
+          description: "Признак долгового кошелька (wallet-api/schema/table/account_debt.sql): uuid равен uuid кошелька; живая строка — кошелёк долговой (баланс «+» — контрагент должен, «−» — леджер должен), deleted: true — снова обычный, операции и баланс не меняются. Строка на счёте без account_operating или на неизвестного контрагента — 409 missing_reference. Уникальности «контрагент + валюта» нет: несколько займов одному человеку — несколько кошельков. Применяется после counterparty."
+          properties:
+            counterparty_uuid: {type: string, format: uuid}
+            comment: {type: string, description: "Комментарий к займу"}
+            due_date:
+              type: string
+              format: date
+              nullable: true
+              description: |
+                Срок возврата, строго "yyyy-MM-dd". Необязательная колонка:
+                ключа нет — у нового долга без срока, у существующего прежнее
+                значение; null — снять срок. Другое значение (например,
+                "завтра" или дата со временем) — 400 invalid_row, detail
+                называет due_date.
+          required: [counterparty_uuid, comment]
 
     OperationPushRow:
       allOf:
@@ -1601,6 +1676,8 @@ components:
         account: {type: array, items: {$ref: "#/components/schemas/AccountPullRow"}}
         account_operating: {type: array, items: {$ref: "#/components/schemas/AccountOperatingPullRow"}}
         account_asset: {type: array, items: {$ref: "#/components/schemas/AccountAssetPullRow"}}
+        counterparty: {type: array, items: {$ref: "#/components/schemas/CounterpartyPullRow"}}
+        account_debt: {type: array, items: {$ref: "#/components/schemas/AccountDebtPullRow"}}
         operation: {type: array, items: {$ref: "#/components/schemas/OperationPullRow"}}
         operation_link: {type: array, items: {$ref: "#/components/schemas/OperationLinkPullRow"}}
         currency: {type: array, items: {$ref: "#/components/schemas/CurrencyPullRow"}}
@@ -1651,6 +1728,29 @@ components:
             include_in_net_worth: {type: boolean, description: "Входит ли оценка актива в итог «всего с капиталом»"}
             comment: {type: string}
           required: [asset_type, include_in_net_worth, comment]
+
+    CounterpartyPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          description: "Контрагент долгов; клиент, не знающий таблицу, вправе её игнорировать."
+          properties:
+            name: {type: string}
+            comment: {type: string}
+            icon_uuid: {type: string, format: uuid, nullable: true}
+            is_archived: {type: boolean}
+          required: [name, comment, icon_uuid, is_archived]
+
+    AccountDebtPullRow:
+      allOf:
+        - $ref: "#/components/schemas/SyncPullRowBase"
+        - type: object
+          description: "Признак долгового кошелька; клиент, не знающий таблицу, вправе её игнорировать — долговой кошелёк для него обычный кошелёк с верным балансом."
+          properties:
+            counterparty_uuid: {type: string, format: uuid}
+            comment: {type: string}
+            due_date: {type: string, format: date, nullable: true, description: "\"yyyy-MM-dd\"; null — срок не задан"}
+          required: [counterparty_uuid, comment, due_date]
 
     OperationPullRow:
       allOf:
