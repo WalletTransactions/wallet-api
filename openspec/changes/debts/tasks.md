@@ -59,4 +59,4 @@
 
 ## Workflow follow-up
 
-- Архивировать change после выката на prod и закрытия парных changes (`openspec archive`).
+- Архивировать change после выката на test и проверки 5.2 (`openspec archive`), не дожидаясь prod — решение владельца 2026-11-12.
