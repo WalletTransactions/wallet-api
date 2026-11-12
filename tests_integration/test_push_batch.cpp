@@ -1416,3 +1416,429 @@ TEST(renaming_live_wallet_does_not_touch_its_asset) {
     CHECK_EQ(asset_state(*db, identity.ledger_id, wallet), "false|" + std::to_string(pushed_seq(created)));
     CHECK_EQ(view_asset_type(*db, identity.ledger_id, wallet), std::string("1"));
 }
+
+// --- Долги: counterparty и account_debt (change debts) -----------------------
+// Сценарии specs/debts и specs/sync-push change debts.
+
+namespace {
+
+json make_counterparty_row(const std::string& uuid, const std::string& name, bool archived = false) {
+    return json{{"uuid", uuid}, {"name", name}, {"comment", ""}, {"is_archived", archived}};
+}
+
+json make_debt_row(const std::string& wallet_uuid, const std::string& counterparty_uuid) {
+    return json{{"uuid", wallet_uuid}, {"counterparty_uuid", counterparty_uuid}, {"comment", "заём"}};
+}
+
+json debt_wallet_account(const std::string& wallet_uuid, const std::string& icon_uuid) {
+    json account = make_account_row(wallet_uuid, icon_uuid, "Debt " + wallet_uuid);
+    account["kind"] = 1;
+    return account;
+}
+
+// Батч «новый долг»: counterparty + account + account_operating + account_debt.
+// Ключи changes — std::map, отдаются алфавитно (account, account_debt,
+// account_operating, counterparty): account_debt раньше своего кошелька и
+// контрагента — порядок применения обязан идти из kApplyOrder.
+json new_debt_batch(const std::string& wallet_uuid, const std::string& counterparty_uuid,
+                    const std::string& icon_uuid, const std::string& currency_uuid) {
+    return {{"counterparty", json::array({make_counterparty_row(counterparty_uuid, "Вася " + counterparty_uuid)})},
+            {"account", json::array({debt_wallet_account(wallet_uuid, icon_uuid)})},
+            {"account_operating",
+             json::array({json{{"uuid", wallet_uuid}, {"currency_uuid", currency_uuid}}})},
+            {"account_debt", json::array({make_debt_row(wallet_uuid, counterparty_uuid)})}};
+}
+
+std::string view_counterparty(db::Database& db, const std::string& ledger_id, const std::string& uuid) {
+    auto res = db.exec("SELECT coalesce(counterparty_uuid::text, 'NULL') FROM v_account_operating "
+                       "WHERE ledger_id = $1 AND uuid = $2",
+                       {ledger_id, uuid});
+    return res.rows.empty() ? std::string("absent") : res.rows.at(0).fields.at(0);
+}
+
+// "deleted|seq" строки — одним значением, как asset_state.
+std::string row_state(db::Database& db, const std::string& table, const std::string& ledger_id,
+                      const std::string& uuid) {
+    auto res = db.exec("SELECT (deleted_at IS NOT NULL)::text || '|' || seq FROM " + table +
+                           " WHERE ledger_id = $1 AND uuid = $2",
+                       {ledger_id, uuid});
+    return res.rows.empty() ? std::string("missing") : res.rows.at(0).fields.at(0);
+}
+
+std::optional<json> pulled_row(const sync_repo::PullResult& pull, const std::string& table, const std::string& uuid) {
+    if (!pull.changes.contains(table)) return std::nullopt;
+    for (const auto& row : pull.changes.at(table)) {
+        if (row.at("uuid").get<std::string>() == uuid) return row;
+    }
+    return std::nullopt;
+}
+
+struct DebtFixture {
+    std::shared_ptr<db::Database> db;
+    fixture::TestIdentity identity;
+    std::string icon_uuid;
+    std::string currency_uuid;
+};
+
+DebtFixture debt_fixture() {
+    DebtFixture f;
+    f.db = fixture::open();
+    f.identity = fixture::make_identity(*f.db);
+    f.icon_uuid = fixture::make_reference_icon(*f.db);
+    f.currency_uuid = fixture::make_currency(*f.db, f.identity.ledger_id, f.icon_uuid);
+    return f;
+}
+
+sync_repo::PushOutcome push(const DebtFixture& f, const json& changes) {
+    return push_batch_guarded(f.db, f.identity.ledger_id, f.identity.device_id, uuidgen::v4(), changes);
+}
+
+} // namespace
+
+TEST(push_new_debt_in_one_batch_with_operation_marks_wallet_as_debt) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4(), cash = uuidgen::v4();
+    json changes = new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid);
+    json cash_row = make_account_row(cash, f.icon_uuid, "Cash " + cash);
+    cash_row["kind"] = 1;
+    changes["account"].push_back(cash_row);
+    changes["account_operating"].push_back(json{{"uuid", cash}, {"currency_uuid", f.currency_uuid}});
+    changes["operation"] = json::array({make_operation_row(uuidgen::v4(), cash, wallet)});
+
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), counterparty);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, cash), std::string("NULL"));
+    // Долг без срока: due_date не прислан — NULL.
+    auto due = f.db->exec("SELECT coalesce(due_date::text, 'NULL') FROM account_debt WHERE ledger_id = $1 AND uuid = $2",
+                          {f.identity.ledger_id, wallet});
+    REQUIRE(due.rows.size() == 1);
+    CHECK_EQ(due.rows.at(0).fields.at(0), std::string("NULL"));
+}
+
+TEST(push_debt_due_date_is_stored_and_cleared_by_explicit_null) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    json changes = new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid);
+    changes["account_debt"][0]["due_date"] = "2026-12-31";
+    REQUIRE(push(f, changes).http_status == 200);
+    auto read_due = [&] {
+        return f.db
+            ->exec("SELECT coalesce(due_date::text, 'NULL') FROM account_debt WHERE ledger_id = $1 AND uuid = $2",
+                   {f.identity.ledger_id, wallet})
+            .rows.at(0)
+            .fields.at(0);
+    };
+    CHECK_EQ(read_due(), std::string("2026-12-31"));
+
+    // Строка без ключа due_date — прежнее значение остаётся (TableSpec::optional_columns).
+    REQUIRE(push(f, {{"account_debt", json::array({make_debt_row(wallet, counterparty)})}}).http_status == 200);
+    CHECK_EQ(read_due(), std::string("2026-12-31"));
+
+    json cleared = make_debt_row(wallet, counterparty);
+    cleared["due_date"] = nullptr;
+    REQUIRE(push(f, {{"account_debt", json::array({cleared})}}).http_status == 200);
+    CHECK_EQ(read_due(), std::string("NULL"));
+}
+
+TEST(push_debt_with_bad_due_date_is_invalid_row_and_rolls_back) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    json changes = new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid);
+    changes["account_debt"][0]["due_date"] = "завтра";
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 400);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("invalid_row"));
+    CHECK(body.value("detail", std::string{}).find("due_date") != std::string::npos);
+    CHECK(!account_row_exists(*f.db, f.identity.ledger_id, wallet));
+    CHECK_EQ(row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty), std::string("missing"));
+}
+
+TEST(push_debt_on_category_is_missing_reference_and_rolls_back) {
+    auto f = debt_fixture();
+    std::string category = uuidgen::v4(), counterparty = uuidgen::v4();
+    json changes = {
+        {"counterparty", json::array({make_counterparty_row(counterparty, "Вася " + counterparty)})},
+        {"account", json::array({make_account_row(category, f.icon_uuid, "Category " + category)})},
+        {"account_debt", json::array({make_debt_row(category, counterparty)})},
+    };
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 409);
+    CHECK_EQ(json::parse(outcome.response_body).value("error", std::string{}), std::string("missing_reference"));
+    CHECK(!account_row_exists(*f.db, f.identity.ledger_id, category));
+    CHECK_EQ(row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty), std::string("missing"));
+}
+
+TEST(push_debt_with_unknown_counterparty_is_missing_reference) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4();
+    json changes = new_debt_batch(wallet, uuidgen::v4(), f.icon_uuid, f.currency_uuid);
+    changes.erase("counterparty");
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 409);
+    CHECK_EQ(json::parse(outcome.response_body).value("error", std::string{}), std::string("missing_reference"));
+    CHECK(!account_row_exists(*f.db, f.identity.ledger_id, wallet));
+}
+
+TEST(push_two_debts_of_one_counterparty_in_one_currency_are_both_stored) {
+    auto f = debt_fixture();
+    std::string first = uuidgen::v4(), second = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(first, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+
+    json changes = {
+        {"account", json::array({debt_wallet_account(second, f.icon_uuid)})},
+        {"account_operating", json::array({json{{"uuid", second}, {"currency_uuid", f.currency_uuid}}})},
+        {"account_debt", json::array({make_debt_row(second, counterparty)})},
+    };
+    CHECK_EQ(push(f, changes).http_status, 200);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, first), counterparty);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, second), counterparty);
+}
+
+TEST(push_debt_on_asset_wallet_is_accepted) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_asset_batch(wallet, f.icon_uuid, f.currency_uuid, 3)).http_status == 200);
+    json changes = {
+        {"counterparty", json::array({make_counterparty_row(counterparty, "Вася " + counterparty)})},
+        {"account_debt", json::array({make_debt_row(wallet, counterparty)})},
+    };
+    CHECK_EQ(push(f, changes).http_status, 200);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), counterparty);
+    CHECK_EQ(view_asset_type(*f.db, f.identity.ledger_id, wallet), std::string("3"));
+}
+
+TEST(old_client_batch_without_debt_tables_is_accepted_and_wallet_is_not_debt) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4();
+    json changes = {
+        {"account", json::array({debt_wallet_account(wallet, f.icon_uuid)})},
+        {"account_operating", json::array({json{{"uuid", wallet}, {"currency_uuid", f.currency_uuid}}})},
+    };
+    CHECK_EQ(push(f, changes).http_status, 200);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), std::string("NULL"));
+}
+
+TEST(push_counterparty_without_is_archived_is_invalid_row_naming_field) {
+    auto f = debt_fixture();
+    std::string counterparty = uuidgen::v4();
+    json row = make_counterparty_row(counterparty, "Вася " + counterparty);
+    row.erase("is_archived");
+    auto outcome = push(f, {{"counterparty", json::array({row})}});
+    CHECK_EQ(outcome.http_status, 400);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("invalid_row"));
+    CHECK(body.value("detail", std::string{}).find("is_archived") != std::string::npos);
+}
+
+TEST(push_counterparty_with_icon_and_with_unknown_icon) {
+    auto f = debt_fixture();
+    std::string with_icon = uuidgen::v4();
+    json row = make_counterparty_row(with_icon, "С иконкой " + with_icon);
+    row["icon_uuid"] = f.icon_uuid;
+    CHECK_EQ(push(f, {{"counterparty", json::array({row})}}).http_status, 200);
+
+    std::string unknown_icon = uuidgen::v4();
+    json bad = make_counterparty_row(uuidgen::v4(), "Без иконки " + unknown_icon);
+    bad["icon_uuid"] = unknown_icon;
+    auto outcome = push(f, {{"counterparty", json::array({bad})}});
+    CHECK_EQ(outcome.http_status, 409);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("missing_reference"));
+    CHECK_EQ(body.value("table", std::string{}), std::string("icon"));
+    CHECK_EQ(body.value("uuid", std::string{}), unknown_icon);
+}
+
+TEST(duplicate_counterparty_name_is_409_duplicate_name_with_existing_uuid) {
+    auto f = debt_fixture();
+    std::string vasya = uuidgen::v4();
+    std::string suffix = uuidgen::v4().substr(0, 8);
+    REQUIRE(push(f, {{"counterparty", json::array({make_counterparty_row(vasya, "Вася Ёлкин " + suffix)})}})
+                .http_status == 200);
+
+    // Регистр, «ё»/«е» и пробелы по краям не различают имена.
+    std::string dup = uuidgen::v4();
+    std::string wallet = uuidgen::v4();
+    json changes = new_debt_batch(wallet, dup, f.icon_uuid, f.currency_uuid);
+    changes["counterparty"][0]["name"] = "  вася елкин " + suffix + " ";
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 409);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("duplicate_name"));
+    REQUIRE(body.contains("conflicts") && body.at("conflicts").size() == 1);
+    const json& c = body.at("conflicts").at(0);
+    CHECK_EQ(c.value("table", std::string{}), std::string("counterparty"));
+    CHECK_EQ(c.value("reason", std::string{}), std::string("duplicate_name"));
+    CHECK_EQ(c.value("uuid", std::string{}), dup);
+    CHECK_EQ(c.value("existing_uuid", std::string{}), vasya);
+    // Батч не применён целиком.
+    CHECK_EQ(row_state(*f.db, "counterparty", f.identity.ledger_id, dup), std::string("missing"));
+    CHECK(!account_row_exists(*f.db, f.identity.ledger_id, wallet));
+
+    // Имя удалённого контрагента свободно.
+    json tomb = make_counterparty_row(vasya, "Вася Ёлкин " + suffix);
+    tomb["deleted"] = true;
+    REQUIRE(push(f, {{"counterparty", json::array({tomb})}}).http_status == 200);
+    CHECK_EQ(push(f, changes).http_status, 200);
+}
+
+TEST(deleting_counterparty_with_live_debt_is_409_counterparty_in_use) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+    std::string before = row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty);
+
+    json tomb = make_counterparty_row(counterparty, "Вася " + counterparty);
+    tomb["deleted"] = true;
+    auto outcome = push(f, {{"counterparty", json::array({tomb})}});
+    CHECK_EQ(outcome.http_status, 409);
+    json body = json::parse(outcome.response_body);
+    CHECK_EQ(body.value("error", std::string{}), std::string("counterparty_in_use"));
+    CHECK_EQ(body.value("uuid", std::string{}), counterparty);
+    // Батч откачен: контрагент жив, его seq прежний.
+    CHECK_EQ(row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty), before);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), counterparty);
+}
+
+TEST(deleting_counterparty_together_with_its_debt_in_one_batch_is_accepted) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+
+    json tomb = make_counterparty_row(counterparty, "Вася " + counterparty);
+    tomb["deleted"] = true;
+    // Порядок применения counterparty → account_debt: проверка — в конце транзакции.
+    auto outcome = push(f, {{"counterparty", json::array({tomb})},
+                            {"account_debt", json::array({deleted(make_debt_row(wallet, counterparty))})}});
+    CHECK_EQ(outcome.http_status, 200);
+    std::string seq = std::to_string(pushed_seq(outcome));
+    CHECK_EQ(row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty), "true|" + seq);
+    CHECK_EQ(row_state(*f.db, "account_debt", f.identity.ledger_id, wallet), "true|" + seq);
+}
+
+TEST(deleting_counterparty_together_with_debt_wallet_is_accepted_via_cascade) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+
+    json tomb = make_counterparty_row(counterparty, "Вася " + counterparty);
+    tomb["deleted"] = true;
+    json changes = delete_wallet_batch(wallet, f.icon_uuid, f.currency_uuid);
+    changes["counterparty"] = json::array({tomb});
+    auto outcome = push(f, changes);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(row_state(*f.db, "account_debt", f.identity.ledger_id, wallet),
+             "true|" + std::to_string(pushed_seq(outcome)));
+}
+
+TEST(deleting_counterparty_without_debts_is_accepted) {
+    auto f = debt_fixture();
+    std::string counterparty = uuidgen::v4();
+    REQUIRE(push(f, {{"counterparty", json::array({make_counterparty_row(counterparty, "Вася " + counterparty)})}})
+                .http_status == 200);
+    json tomb = make_counterparty_row(counterparty, "Вася " + counterparty);
+    tomb["deleted"] = true;
+    CHECK_EQ(push(f, {{"counterparty", json::array({tomb})}}).http_status, 200);
+}
+
+TEST(archiving_counterparty_keeps_its_debts_live) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+    json archived = make_counterparty_row(counterparty, "Вася " + counterparty, /*archived=*/true);
+    CHECK_EQ(push(f, {{"counterparty", json::array({archived})}}).http_status, 200);
+    CHECK(row_state(*f.db, "account_debt", f.identity.ledger_id, wallet).rfind("false|", 0) == 0);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), counterparty);
+}
+
+TEST(soft_deleted_debt_returns_wallet_to_regular_without_touching_operations) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4(), category = uuidgen::v4();
+    REQUIRE(push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid)).http_status == 200);
+    json op_batch = {
+        {"account", json::array({make_account_row(category, f.icon_uuid, "Cat " + category)})},
+        {"operation", json::array({make_operation_row(uuidgen::v4(), wallet, category)})}};
+    REQUIRE(push(f, op_batch).http_status == 200);
+
+    REQUIRE(push(f, {{"account_debt", json::array({deleted(make_debt_row(wallet, counterparty))})}}).http_status ==
+            200);
+    CHECK_EQ(view_counterparty(*f.db, f.identity.ledger_id, wallet), std::string("NULL"));
+    auto ops = f.db->exec("SELECT count(*) FROM operation WHERE ledger_id = $1 AND acc_fr_uuid = $2 "
+                          "AND deleted_at IS NULL",
+                          {f.identity.ledger_id, wallet});
+    CHECK_EQ(ops.rows.at(0).fields.at(0), std::string("1"));
+}
+
+TEST(deleting_wallet_tombstones_its_debt_and_pull_delivers_it) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    auto created = push(f, new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid));
+    REQUIRE(created.http_status == 200);
+    int64_t cursor = pushed_seq(created);
+
+    auto outcome = push(f, delete_wallet_batch(wallet, f.icon_uuid, f.currency_uuid));
+    REQUIRE(outcome.http_status == 200);
+    CHECK_EQ(row_state(*f.db, "account_debt", f.identity.ledger_id, wallet),
+             "true|" + std::to_string(pushed_seq(outcome)));
+    // Контрагента каскад не трогает.
+    CHECK(row_state(*f.db, "counterparty", f.identity.ledger_id, counterparty).rfind("false|", 0) == 0);
+
+    auto pull = sync_repo::pull_ledger_stream(*f.db, f.identity.ledger_id, cursor, 1000);
+    auto debt = pulled_row(pull, "account_debt", wallet);
+    REQUIRE(debt.has_value());
+    CHECK(!debt->at("deleted_at").is_null());
+}
+
+TEST(debt_pushed_live_after_its_wallet_was_deleted_is_stored_deleted) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    REQUIRE(push(f, delete_wallet_batch(wallet, f.icon_uuid, f.currency_uuid)).http_status == 200);
+    json second = {{"counterparty", json::array({make_counterparty_row(counterparty, "Вася " + counterparty)})},
+                   {"account_debt", json::array({make_debt_row(wallet, counterparty)})}};
+    auto outcome = push(f, second);
+    CHECK_EQ(outcome.http_status, 200);
+    CHECK_EQ(row_state(*f.db, "account_debt", f.identity.ledger_id, wallet),
+             "true|" + std::to_string(pushed_seq(outcome)));
+}
+
+TEST(pull_delivers_counterparty_and_debt_with_all_columns_and_tombstones) {
+    auto f = debt_fixture();
+    std::string wallet = uuidgen::v4(), counterparty = uuidgen::v4();
+    json changes = new_debt_batch(wallet, counterparty, f.icon_uuid, f.currency_uuid);
+    changes["counterparty"][0]["icon_uuid"] = f.icon_uuid;
+    changes["counterparty"][0]["comment"] = "сосед";
+    changes["account_debt"][0]["due_date"] = "2027-01-15";
+    REQUIRE(push(f, changes).http_status == 200);
+
+    // Второе устройство со старым курсором.
+    auto pull = sync_repo::pull_ledger_stream(*f.db, f.identity.ledger_id, /*cursor=*/0, /*limit=*/1000);
+    auto cp = pulled_row(pull, "counterparty", counterparty);
+    REQUIRE(cp.has_value());
+    CHECK(cp->at("name") == json("Вася " + counterparty));
+    CHECK(cp->at("comment") == json("сосед"));
+    CHECK(cp->at("icon_uuid") == json(f.icon_uuid));
+    CHECK(cp->at("is_archived") == json(false));
+    CHECK(cp->at("deleted_at").is_null());
+    CHECK(cp->contains("seq") && cp->contains("updated_at") && cp->contains("updated_by"));
+    auto debt = pulled_row(pull, "account_debt", wallet);
+    REQUIRE(debt.has_value());
+    CHECK(debt->at("counterparty_uuid") == json(counterparty));
+    CHECK(debt->at("comment") == json("заём"));
+    CHECK(debt->at("due_date") == json("2027-01-15"));
+    CHECK(debt->at("deleted_at").is_null());
+    int64_t cursor = pull.next_seq;
+
+    json tomb = make_counterparty_row(counterparty, "Вася " + counterparty);
+    tomb["deleted"] = true;
+    REQUIRE(push(f, {{"counterparty", json::array({tomb})},
+                     {"account_debt", json::array({deleted(make_debt_row(wallet, counterparty))})}})
+                .http_status == 200);
+    auto after = sync_repo::pull_ledger_stream(*f.db, f.identity.ledger_id, cursor, 1000);
+    auto cp_tomb = pulled_row(after, "counterparty", counterparty);
+    auto debt_tomb = pulled_row(after, "account_debt", wallet);
+    REQUIRE(cp_tomb.has_value());
+    REQUIRE(debt_tomb.has_value());
+    CHECK(!cp_tomb->at("deleted_at").is_null());
+    CHECK(!debt_tomb->at("deleted_at").is_null());
+}
