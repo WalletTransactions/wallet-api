@@ -45,6 +45,9 @@
 # sync.cpp (test_tombstone_retention.cpp, change purge-synced-tombstones) —
 # HTTP-слой GET /sync/pull тем же путём токена: подтверждение по ledger_id
 # запроса, выключатель и падение чистки живут именно в handle_pull.
+#
+# test_debts_reports.cpp (change debts) — отчётные SQL-функции миграции
+# 000036 голым SQL через db.cpp, новых исходников не требует.
 add_executable(wallet_api_integration_tests
     test_main.cpp
     test_push_batch.cpp
@@ -54,6 +57,7 @@ add_executable(wallet_api_integration_tests
     test_currencies.cpp
     test_reference_icons.cpp
     test_tombstone_retention.cpp
+    test_debts_reports.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp

@@ -24,11 +24,11 @@
 
 ## 4. Отчётные функции
 
-- [ ] 4.1 В той же миграции: `CREATE OR REPLACE VIEW v_account_operating` с `LEFT JOIN account_debt` (живые) и колонкой `counterparty_uuid` в конце (design D5); зеркало `schema/view/v_account_operating.sql`. Проверка: `SELECT counterparty_uuid FROM v_account_operating` на test отдаёт значение у долгового кошелька и `NULL` у остальных.
-- [ ] 4.2 `f_balance_to_date`, `f_balance_to_dates`, `f_balance_series` отдают `counterparty_uuid` в конце (`DROP` + `CREATE` + `GRANT`); в пустом бакете `f_balance_series` — `NULL`. Проверка: SQL-тест на леджере с долговым и обычным кошельком.
-- [ ] 4.3 `f_operations_for_period`: ветка `'debt'` (design D6); если влит фильтр по `kind`, он принимает `'debt'`. Проверка: SQL-тесты — выдача `kind = 'debt'`, перевод между двумя долговыми `transfer`, прощение `expense`.
-- [ ] 4.4 Новая `f_debts_for_period` (design D7) с `GRANT EXECUTE`; зеркало `schema/function/`. Проверка: SQL-тесты на сценарии `specs/debts` — «остаток после частичного возврата», «нет курса», нулевой и архивный кошелёк в выдаче, два займа одному человеку.
-- [ ] 4.5 Тестовые данные в `tests_integration/` для отчётных функций: леджер с долгами, переплатой (баланс уходит в минус) и прощением. Проверка: тесты зелёные.
+- [x] 4.1 В той же миграции: `CREATE OR REPLACE VIEW v_account_operating` с `LEFT JOIN account_debt` (живые) и колонкой `counterparty_uuid` в конце (design D5); зеркало `schema/view/v_account_operating.sql`. Проверка: `SELECT counterparty_uuid FROM v_account_operating` на test отдаёт значение у долгового кошелька и `NULL` у остальных.
+- [x] 4.2 `f_balance_to_date`, `f_balance_to_dates`, `f_balance_series` отдают `counterparty_uuid` в конце (`DROP` + `CREATE` + `GRANT`); в пустом бакете `f_balance_series` — `NULL`. Проверка: SQL-тест на леджере с долговым и обычным кошельком.
+- [x] 4.3 `f_operations_for_period`: ветка `'debt'` (design D6); если влит фильтр по `kind`, он принимает `'debt'`. Проверка: SQL-тесты — выдача `kind = 'debt'`, перевод между двумя долговыми `transfer`, прощение `expense`.
+- [x] 4.4 Новая `f_debts_for_period` (design D7) с `GRANT EXECUTE`; зеркало `schema/function/`. Проверка: SQL-тесты на сценарии `specs/debts` — «остаток после частичного возврата», «нет курса», нулевой и архивный кошелёк в выдаче, два займа одному человеку.
+- [x] 4.5 Тестовые данные в `tests_integration/` для отчётных функций: леджер с долгами, переплатой (баланс уходит в минус) и прощением. Проверка: тесты зелёные.
 
 ## 5. Парные изменения и выкат
 
@@ -49,6 +49,9 @@
 - 3.2 — ответ `409 {"error":"duplicate_name","conflicts":[{"table":"counterparty","reason":"duplicate_name","uuid":…,"existing_uuid":…}]}`: формат конфликта счёта плюс `error` из спеки (решение владельца 2026-11-12); ответ для `account` не менялся.
 - 3.3 — тело `409 {"error":"counterparty_in_use","table":"counterparty","uuid":…}`: `table`/`uuid` сверх спеки, как у `missing_reference`. Проверка — после `upsert` и каскада, в той же транзакции; три батча проходят: «снять долг и удалить контрагента», «удалить кошелёк и контрагента», «удалить контрагента без долгов».
 - 3.4–3.6 — интеграционные тесты прогнаны не через `run_local.sh` (он привязан к кластеру wallet-test), а тем же бинарём против одноразового `postgres:16-alpine` с миграциями до `000036`: 128 тестов, 0 упавших.
+- 4.1–4.5 — SQL-тесты — `tests_integration/test_debts_reports.cpp` (6 тестов на одном наборе данных), вместо ручного `SELECT` на test; прогон — тот же, что у 3.4. `counterparty_uuid` в `v_account_operating` проверяется через `f_balance_*` и тесты синка (`view_counterparty`).
+- 4.3 — `kind = 'debt'` строго по спеке: только прямой перевод «кошелёк ↔ кошелёк», ровно одна сторона которого долговая. Ноги разновалютного займа через категорию `Transfer` остаются `expense`/`income` (подтверждено владельцем 2026-11-12). Побочный эффект: `p_kind => 'transfer'` больше не находит долговые переводы — wallet-report должен принять `'debt'` в валидации `kind` (парный change). То же в `f_operations_total`.
+- 4.4 — порядок строк `f_debts_for_period` — `counterparty_name, account_name, account_uuid` (в design не задан). `balance_to` выводится из округлённых частей — тождество точное.
 - 2.5 — разовой чистки осиротевших строк нет: таблица создаётся той же миграцией, строк в ней ещё нет. Каскад — правилом `cascade_rules()` в `push_batch`, как у `account_asset`.
 
 ## Workflow follow-up
