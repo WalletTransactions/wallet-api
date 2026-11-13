@@ -15,6 +15,10 @@ python3 -m venv /tmp/icons-venv && /tmp/icons-venv/bin/pip install cairosvg
 python3 scripts/gen_default_icons.py build
 ```
 
+Готовые PNG из `scripts/icon_overrides/<resource>.png` заменяют растеризацию
+вектора телефона (сейчас `flag_albania.png`: векторный орёл на телефоне
+получился неразборчивым, взят круглый кроп флага Noto Color Emoji).
+
 Результат: `migrations/default_icons/*.png` и `manifest.json`,
 `migrations/000037_default_reference_icons.up.sql` и `.down.sql`. SQL руками не
 правится — тест `test_committed_sql_is_what_the_generator_writes` падает, если

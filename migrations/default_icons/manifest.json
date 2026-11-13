@@ -393,7 +393,7 @@
   "name": "Flag ALL",
   "icon_type": 1,
   "file": "flag_albania.png",
-  "source": "vector"
+  "source": "override"
  },
  {
   "name": "Flag ARS",

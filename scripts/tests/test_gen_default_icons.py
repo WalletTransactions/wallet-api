@@ -54,8 +54,9 @@ class ManifestTest(unittest.TestCase):
 
     def test_vector_flags_are_rasterized_to_64px(self):
         from PIL import Image
-        vectors = [m for m in self.manifest if m["source"] == "vector"]
+        vectors = [m for m in self.manifest if m["source"] in ("vector", "override")]
         self.assertEqual(len(vectors), 11)
+        self.assertEqual([m["file"] for m in vectors if m["source"] == "override"], ["flag_albania.png"])
         for m in vectors:
             with Image.open(os.path.join(gen.ICON_DIR, m["file"])) as im:
                 self.assertEqual(im.size, (gen.FLAG_SIZE, gen.FLAG_SIZE), m["file"])

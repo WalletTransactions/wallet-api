@@ -29,6 +29,8 @@ import xml.etree.ElementTree as ET
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_DIR = os.path.join(ROOT, "migrations", "default_icons")
 MANIFEST = os.path.join(ICON_DIR, "manifest.json")
+# Готовые PNG, которые заменяют растеризацию вектора с телефона (имя файла = resource).
+OVERRIDE_DIR = os.path.join(ROOT, "scripts", "icon_overrides")
 UP_SQL = os.path.join(ROOT, "migrations", "000037_default_reference_icons.up.sql")
 DOWN_SQL = os.path.join(ROOT, "migrations", "000037_default_reference_icons.down.sql")
 
@@ -148,7 +150,11 @@ def cmd_collect(android):
         png_src = os.path.join(drawable, resource + ".png")
         xml_src = os.path.join(drawable, resource + ".xml")
         target = os.path.join(ICON_DIR, resource + ".png")
-        if os.path.exists(png_src):
+        override = os.path.join(OVERRIDE_DIR, resource + ".png")
+        if os.path.exists(override):
+            shutil.copyfile(override, target)
+            source = "override"
+        elif os.path.exists(png_src):
             shutil.copyfile(png_src, target)
             source = "png"
         elif os.path.exists(xml_src):
