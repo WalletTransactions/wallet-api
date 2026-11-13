@@ -1,0 +1,524 @@
+[
+ {
+  "name": "Groceries",
+  "icon_type": 2,
+  "file": "fl_shopping_cart.png",
+  "source": "png"
+ },
+ {
+  "name": "Restaurants",
+  "icon_type": 2,
+  "file": "fl_fork_and_knife_with_plate.png",
+  "source": "png"
+ },
+ {
+  "name": "Coffee",
+  "icon_type": 2,
+  "file": "fl_hot_beverage.png",
+  "source": "png"
+ },
+ {
+  "name": "Bar",
+  "icon_type": 2,
+  "file": "fl_cocktail_glass.png",
+  "source": "png"
+ },
+ {
+  "name": "Public transport",
+  "icon_type": 2,
+  "file": "fl_bus.png",
+  "source": "png"
+ },
+ {
+  "name": "Taxi",
+  "icon_type": 2,
+  "file": "fl_taxi.png",
+  "source": "png"
+ },
+ {
+  "name": "Petrol",
+  "icon_type": 2,
+  "file": "fl_fuel_pump.png",
+  "source": "png"
+ },
+ {
+  "name": "Car",
+  "icon_type": 2,
+  "file": "fl_automobile.png",
+  "source": "png"
+ },
+ {
+  "name": "Car wash",
+  "icon_type": 2,
+  "file": "fl_sponge.png",
+  "source": "png"
+ },
+ {
+  "name": "Parking",
+  "icon_type": 2,
+  "file": "fl_p_button.png",
+  "source": "png"
+ },
+ {
+  "name": "Road",
+  "icon_type": 2,
+  "file": "fl_motorway.png",
+  "source": "png"
+ },
+ {
+  "name": "Rentals",
+  "icon_type": 2,
+  "file": "fl_key.png",
+  "source": "png"
+ },
+ {
+  "name": "Electricity",
+  "icon_type": 2,
+  "file": "fl_high_voltage.png",
+  "source": "png"
+ },
+ {
+  "name": "Water Bill",
+  "icon_type": 2,
+  "file": "fl_droplet.png",
+  "source": "png"
+ },
+ {
+  "name": "Gas",
+  "icon_type": 2,
+  "file": "fl_fire.png",
+  "source": "png"
+ },
+ {
+  "name": "Internet Bill",
+  "icon_type": 2,
+  "file": "fl_globe_with_meridians.png",
+  "source": "png"
+ },
+ {
+  "name": "Phone",
+  "icon_type": 2,
+  "file": "fl_mobile_phone.png",
+  "source": "png"
+ },
+ {
+  "name": "Doctor",
+  "icon_type": 2,
+  "file": "fl_stethoscope.png",
+  "source": "png"
+ },
+ {
+  "name": "Pharmacy pills",
+  "icon_type": 2,
+  "file": "fl_pill.png",
+  "source": "png"
+ },
+ {
+  "name": "Clothing",
+  "icon_type": 2,
+  "file": "fl_t_shirt.png",
+  "source": "png"
+ },
+ {
+  "name": "Accessories",
+  "icon_type": 2,
+  "file": "fl_handbag.png",
+  "source": "png"
+ },
+ {
+  "name": "Personal care",
+  "icon_type": 2,
+  "file": "fl_lotion_bottle.png",
+  "source": "png"
+ },
+ {
+  "name": "Hair dress",
+  "icon_type": 2,
+  "file": "fl_person_getting_haircut.png",
+  "source": "png"
+ },
+ {
+  "name": "Children & Babies",
+  "icon_type": 2,
+  "file": "fl_teddy_bear.png",
+  "source": "png"
+ },
+ {
+  "name": "Baby",
+  "icon_type": 2,
+  "file": "fl_baby_bottle.png",
+  "source": "png"
+ },
+ {
+  "name": "Cat",
+  "icon_type": 2,
+  "file": "fl_cat_face.png",
+  "source": "png"
+ },
+ {
+  "name": "Entertainment",
+  "icon_type": 2,
+  "file": "fl_party_popper.png",
+  "source": "png"
+ },
+ {
+  "name": "Cinema",
+  "icon_type": 2,
+  "file": "fl_clapper_board.png",
+  "source": "png"
+ },
+ {
+  "name": "Games",
+  "icon_type": 2,
+  "file": "fl_video_game.png",
+  "source": "png"
+ },
+ {
+  "name": "Traveling",
+  "icon_type": 2,
+  "file": "fl_luggage.png",
+  "source": "png"
+ },
+ {
+  "name": "Airline ticket",
+  "icon_type": 2,
+  "file": "fl_airplane_departure.png",
+  "source": "png"
+ },
+ {
+  "name": "Hotel",
+  "icon_type": 2,
+  "file": "fl_hotel.png",
+  "source": "png"
+ },
+ {
+  "name": "Sightseeing",
+  "icon_type": 2,
+  "file": "fl_classical_building.png",
+  "source": "png"
+ },
+ {
+  "name": "Presents",
+  "icon_type": 2,
+  "file": "fl_wrapped_gift.png",
+  "source": "png"
+ },
+ {
+  "name": "Charity",
+  "icon_type": 2,
+  "file": "fl_heart_with_ribbon.png",
+  "source": "png"
+ },
+ {
+  "name": "Book",
+  "icon_type": 2,
+  "file": "fl_books.png",
+  "source": "png"
+ },
+ {
+  "name": "Sports",
+  "icon_type": 2,
+  "file": "fl_soccer_ball.png",
+  "source": "png"
+ },
+ {
+  "name": "Bicycle",
+  "icon_type": 2,
+  "file": "fl_bicycle.png",
+  "source": "png"
+ },
+ {
+  "name": "TV",
+  "icon_type": 2,
+  "file": "fl_television.png",
+  "source": "png"
+ },
+ {
+  "name": "Electronics",
+  "icon_type": 2,
+  "file": "fl_laptop.png",
+  "source": "png"
+ },
+ {
+  "name": "Houseware",
+  "icon_type": 2,
+  "file": "fl_couch_and_lamp.png",
+  "source": "png"
+ },
+ {
+  "name": "Maintenance",
+  "icon_type": 2,
+  "file": "fl_wrench.png",
+  "source": "png"
+ },
+ {
+  "name": "Tools",
+  "icon_type": 2,
+  "file": "fl_hammer_and_wrench.png",
+  "source": "png"
+ },
+ {
+  "name": "Insurance",
+  "icon_type": 2,
+  "file": "fl_shield.png",
+  "source": "png"
+ },
+ {
+  "name": "Family",
+  "icon_type": 2,
+  "file": "fl_house_with_garden.png",
+  "source": "png"
+ },
+ {
+  "name": "Friends",
+  "icon_type": 2,
+  "file": "fl_people_hugging.png",
+  "source": "png"
+ },
+ {
+  "name": "Coin",
+  "icon_type": 2,
+  "file": "fl_coin.png",
+  "source": "png"
+ },
+ {
+  "name": "Salary",
+  "icon_type": 2,
+  "file": "fl_money_bag.png",
+  "source": "png"
+ },
+ {
+  "name": "Briefcase",
+  "icon_type": 2,
+  "file": "fl_briefcase.png",
+  "source": "png"
+ },
+ {
+  "name": "Percentage",
+  "icon_type": 2,
+  "file": "fl_chart_increasing.png",
+  "source": "png"
+ },
+ {
+  "name": "Trending up",
+  "icon_type": 2,
+  "file": "fl_rocket.png",
+  "source": "png"
+ },
+ {
+  "name": "Debt",
+  "icon_type": 2,
+  "file": "fl_receipt.png",
+  "source": "png"
+ },
+ {
+  "name": "Fees",
+  "icon_type": 2,
+  "file": "fl_money_with_wings.png",
+  "source": "png"
+ },
+ {
+  "name": "Transfer",
+  "icon_type": 2,
+  "file": "fl_counterclockwise_arrows_button.png",
+  "source": "png"
+ },
+ {
+  "name": "Money transfer",
+  "icon_type": 2,
+  "file": "fl_currency_exchange.png",
+  "source": "png"
+ },
+ {
+  "name": "Wallet",
+  "icon_type": 2,
+  "file": "fl_purse.png",
+  "source": "png"
+ },
+ {
+  "name": "Visa card",
+  "icon_type": 2,
+  "file": "fl_credit_card.png",
+  "source": "png"
+ },
+ {
+  "name": "MasterCard",
+  "icon_type": 2,
+  "file": "fl_credit_card.png",
+  "source": "png"
+ },
+ {
+  "name": "USD banknote",
+  "icon_type": 2,
+  "file": "fl_dollar_banknote.png",
+  "source": "png"
+ },
+ {
+  "name": "Alcohol",
+  "icon_type": 2,
+  "file": "fl_wine_glass.png",
+  "source": "png"
+ },
+ {
+  "name": "Award",
+  "icon_type": 2,
+  "file": "fl_trophy.png",
+  "source": "png"
+ },
+ {
+  "name": "Baby Sitter",
+  "icon_type": 2,
+  "file": "fl_person_feeding_baby.png",
+  "source": "png"
+ },
+ {
+  "name": "Shops",
+  "icon_type": 2,
+  "file": "fl_shopping_bags.png",
+  "source": "png"
+ },
+ {
+  "name": "Travel",
+  "icon_type": 2,
+  "file": "fl_airplane.png",
+  "source": "png"
+ },
+ {
+  "name": "unknown",
+  "icon_type": 2,
+  "file": "fl_white_question_mark.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag ALL",
+  "icon_type": 1,
+  "file": "flag_albania.png",
+  "source": "override"
+ },
+ {
+  "name": "Flag ARS",
+  "icon_type": 1,
+  "file": "flag_ars.png",
+  "source": "png"
+ },
+ {
+  "name": "Bosnian flag",
+  "icon_type": 1,
+  "file": "flag_bosnian.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag CLP",
+  "icon_type": 1,
+  "file": "flag_clp.png",
+  "source": "png"
+ },
+ {
+  "name": "Croatian flag",
+  "icon_type": 1,
+  "file": "flag_croatian.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag KES",
+  "icon_type": 1,
+  "file": "flag_kenian.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag TZS",
+  "icon_type": 1,
+  "file": "flag_tanzanian.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag RUB",
+  "icon_type": 1,
+  "file": "flag_rub.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag USD",
+  "icon_type": 1,
+  "file": "flag_usd.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag Euro",
+  "icon_type": 1,
+  "file": "flag_eur.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag GBP",
+  "icon_type": 1,
+  "file": "flag_gbp.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag CNY",
+  "icon_type": 1,
+  "file": "flag_cny.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag KZT",
+  "icon_type": 1,
+  "file": "flag_kazakhstan.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag BYN",
+  "icon_type": 1,
+  "file": "flag_byn.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag UAH",
+  "icon_type": 1,
+  "file": "flag_uah.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag GEL",
+  "icon_type": 1,
+  "file": "flag_georgia.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag AMD",
+  "icon_type": 1,
+  "file": "flag_amd.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag TRY",
+  "icon_type": 1,
+  "file": "flag_try.png",
+  "source": "vector"
+ },
+ {
+  "name": "Serbian flag",
+  "icon_type": 1,
+  "file": "flag_serbian.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag PLN",
+  "icon_type": 1,
+  "file": "flag_polish.png",
+  "source": "png"
+ },
+ {
+  "name": "Flag THB",
+  "icon_type": 1,
+  "file": "flag_thb.png",
+  "source": "vector"
+ },
+ {
+  "name": "Flag AED",
+  "icon_type": 1,
+  "file": "flag_aed.png",
+  "source": "vector"
+ }
+]

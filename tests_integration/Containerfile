@@ -28,6 +28,8 @@ COPY src/ src/
 COPY third_party/ third_party/
 COPY scripts/ scripts/
 COPY tests_integration/ tests_integration/
+# Миграция 000037 и манифест набора иконок — test_default_icons.cpp (читает /src/migrations).
+COPY migrations/ migrations/
 # Тестовый RSA-ключ/JWT — test_reference_icons.cpp (сквозной HTTP-тест).
 COPY tests/test_rsa_helper.hpp tests/
 

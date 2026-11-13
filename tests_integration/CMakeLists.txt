@@ -48,6 +48,11 @@
 #
 # test_debts_reports.cpp (change debts) — отчётные SQL-функции миграции
 # 000036 голым SQL через db.cpp, новых исходников не требует.
+#
+# test_default_icons.cpp (change default-reference-icons) — миграция 000037:
+# набор общих иконок, повтор up/down в откатываемой транзакции; читает файлы
+# миграции и манифест набора из /src/migrations (Containerfile их копирует,
+# каталог переопределяет WALLET_API_MIGRATIONS_DIR), новых исходников не требует.
 add_executable(wallet_api_integration_tests
     test_main.cpp
     test_push_batch.cpp
@@ -58,6 +63,7 @@ add_executable(wallet_api_integration_tests
     test_reference_icons.cpp
     test_tombstone_retention.cpp
     test_debts_reports.cpp
+    test_default_icons.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
