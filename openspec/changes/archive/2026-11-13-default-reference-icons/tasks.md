@@ -3,7 +3,7 @@
 ## 1. Генератор и PNG набора
 
 - [x] 1.1 `scripts/gen_default_icons.py collect --android <путь к android-wallet>`: читает `seed.json` (`category_icons`, `flag_icons`, флаги `currencies`), копирует `fl_*.png` и PNG-флаги в `migrations/default_icons/<имя>.png`, пишет `migrations/default_icons/manifest.json` (имя, `icon_type` 2 для категорий и 1 для флагов, файл). Проверка: манифест содержит 87 уникальных имён, среди них `unknown`; каждый файл ≤ 1 МиБ; повторный запуск даёт тот же манифест
-- [ ] 1.2 Растеризация 11 векторных флагов (`flag_albania`, `flag_gbp`, `flag_byn`, `flag_uah`, `flag_kazakhstan`, `flag_georgia`, `flag_amd`, `flag_aed`, `flag_cny`, `flag_thb`, `flag_try`) в PNG 64×64 с прозрачным фоном: `pathData` → SVG → PNG (`cairosvg` в виртуальном окружении, запасной путь `rsvg-convert`). Проверка: 11 PNG на месте, размер и режим RGBA; контакт-лист всех 22 флагов показан владельцу на ревью
+- [x] 1.2 (ревью владельца 2026-11-13: флаг Албании заменён готовым PNG из `scripts/icon_overrides/`, остальные приняты) Растеризация 11 векторных флагов (`flag_albania`, `flag_gbp`, `flag_byn`, `flag_uah`, `flag_kazakhstan`, `flag_georgia`, `flag_amd`, `flag_aed`, `flag_cny`, `flag_thb`, `flag_try`) в PNG 64×64 с прозрачным фоном: `pathData` → SVG → PNG (`cairosvg` в виртуальном окружении, запасной путь `rsvg-convert`). Проверка: 11 PNG на месте, размер и режим RGBA; контакт-лист всех 22 флагов показан владельцу на ревью
 - [x] 1.3 Тест генератора `scripts/tests/test_gen_default_icons.py` (`python3 -m unittest`): имена манифеста совпадают с `seed.json` с точностью до регистра, `unknown` есть, типы 1 и 2 как ожидается, все файлы PNG ≤ 1 МиБ. Проверка: тест зелёный; в `scripts/README.md` описан запуск
 
 ## 2. Миграция 000037
@@ -15,11 +15,11 @@
 ## 3. Документация и версия
 
 - [x] 3.1 `VERSION` → `0.4.1`, раздел про миграции в `README.md` и `schema/README.md` (набор общих иконок, как его пересоздать генератором, правило «не править `up.sql` руками»). Проверка: в README описан порядок `collect` → `build` → накат и он выполняется как написан
-- [ ] 3.2 Спецификация `default-reference-icons` попадает в основные после слияния (`openspec archive`). Проверка: `openspec validate --all` без новых ошибок
+- [x] 3.2 Спецификация `default-reference-icons` попадает в основные после слияния (`openspec archive`). Проверка: `openspec validate --all` без новых ошибок
 
 ## 4. Проверка на устройстве
 
-- [ ] 4.1 После выката rc-тега на test (`wallet-api 0.4.1-rc.1`, `release-watch`) и `test-refresh`: в `icon` 87 общих иконок, веб показывает флаги в форме валют, Pixel 8 Pro проходит «Синхронизировать сейчас» без «нет иконки-заместителя» и операция списания из `archive-wallet-writeoff` видна в web. Проверка: ручная на test — Тест: [android-wallet#44](https://github.com/WalletTransactions/android-wallet/issues/44)
+- [x] 4.1 (проверено 2026-11-13 на test после `0.4.1-rc.1`: 87 общих иконок, Pixel 8 Pro синкается без «нет иконки-заместителя», операция списания в базе; веб-ленту отдельно не открывал) После выката rc-тега на test (`wallet-api 0.4.1-rc.1`, `release-watch`) и `test-refresh`: в `icon` 87 общих иконок, веб показывает флаги в форме валют, Pixel 8 Pro проходит «Синхронизировать сейчас» без «нет иконки-заместителя» и операция списания из `archive-wallet-writeoff` видна в web. Проверка: ручная на test — Тест: [android-wallet#44](https://github.com/WalletTransactions/android-wallet/issues/44)
 
 ## Workflow follow-up
 
