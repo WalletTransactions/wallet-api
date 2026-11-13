@@ -33,7 +33,7 @@
 ## 5. Парные изменения и выкат
 
 - [x] 5.1 Сообщить в парный change wallet-report порядок `counterparty`, `account_debt` в `kApplyOrder` (его тестовая копия `sync_repo.cpp` должна совпадать) и имена колонок `f_debts_for_period`. Проверка: ссылка на design D7 в design wallet-report.
-- [ ] 5.2 Выкат на test: миграция и wallet-api раньше APK. Проверка: `env-deploy`, интеграционные тесты wallet-api и wallet-report на test зелёные.
+- [x] 5.2 Выкат на test: миграция и wallet-api раньше APK. Проверка: `env-deploy`, интеграционные тесты wallet-api и wallet-report на test зелёные.
 
 ## 6. Импорт Money Lover
 
@@ -57,6 +57,7 @@
 - 4.3 — `kind = 'debt'` строго по спеке: только прямой перевод «кошелёк ↔ кошелёк», ровно одна сторона которого долговая. Ноги разновалютного займа через категорию `Transfer` остаются `expense`/`income` (подтверждено владельцем 2026-11-12). Побочный эффект: `p_kind => 'transfer'` больше не находит долговые переводы — wallet-report должен принять `'debt'` в валидации `kind` (парный change). То же в `f_operations_total`.
 - 4.4 — порядок строк `f_debts_for_period` — `counterparty_name, account_name, account_uuid` (в design не задан). `balance_to` выводится из округлённых частей — тождество точное.
 - 2.5 — разовой чистки осиротевших строк нет: таблица создаётся той же миграцией, строк в ней ещё нет. Каскад — правилом `cascade_rules()` в `push_batch`, как у `account_asset`.
+- 5.2 (2026-11-13) — `v0.4.0-rc.1` выкачен на test автоматически (release → deploy.sh: миграция `wallet` из образа, затем сервис), `wallet-api 0.4.0-rc.1` healthy; APK ещё не выпускался. Интеграционные тесты: wallet-api `run_local.sh` на кластере wallet-test (`wallet_api_it`) — 128/128. wallet-report на кластере wallet-test не запускается: его `run_local.sh` подключается `wallet_reader:wallet_reader`, а `migrate.sh` контура перезадаёт пароль этой (кластерной) роли из `db.env` — 68/71 падают на аутентификации. Поэтому wallet-report прогнан на одноразовом `pgvector/pgvector:pg16` с миграциями wallet-api до 000036: `main` (код выкаченного 0.2.0) — 61/61, ветка `openspec-debts` — 71/71. Выкаченный wallet-report совместим с новыми сигнатурами `f_balance_*`.
 
 ## Workflow follow-up
 
