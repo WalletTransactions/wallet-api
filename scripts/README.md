@@ -41,6 +41,27 @@ python3 -m unittest discover -s scripts/tests -v
 Сверка имён с `seed.json` телефона идёт, если рядом лежит `android-wallet` (или
 задан `ANDROID_WALLET`), иначе этот один тест пропускается.
 
+## `gen_default_currencies.py` — справочник валют по умолчанию
+
+Генератор миграции `000039_default_reference_currencies` (change
+`default-reference-currencies`, см. `../README.md`, «Справочник валют по
+умолчанию»): общие валюты и валютные пары стартового набора телефона.
+
+```bash
+# 1. Собрать манифест (валюты и пары) из seed.json телефона:
+python3 scripts/gen_default_currencies.py collect --android ../android-wallet
+
+# 2. Написать SQL миграции по манифесту (android-wallet больше не нужен):
+python3 scripts/gen_default_currencies.py build
+```
+
+Результат: `migrations/default_currencies/manifest.json`,
+`migrations/000039_default_reference_currencies.up.sql` и `.down.sql`. SQL
+руками не правится — тест `test_committed_sql_is_what_the_generator_writes`
+падает, если файл разошёлся с генератором. Иконки валют берутся по имени из
+набора иконок (`gen_default_icons.py`): тест проверяет, что каждое имя там есть.
+Изменение набора телефона закрывается НОВОЙ миграцией, `000039` не переписывается.
+
 ## `linux/`, `windows/`
 
 Установка wallet-api как системной службы.

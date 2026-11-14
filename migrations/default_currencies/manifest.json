@@ -1,0 +1,280 @@
+{
+ "currencies": [
+  {
+   "iso": "RUB",
+   "name": "Russian Ruble",
+   "symbol": "₽",
+   "icon": "Flag RUB",
+   "precision": 2
+  },
+  {
+   "iso": "USD",
+   "name": "US Dollar",
+   "symbol": "$",
+   "icon": "Flag USD",
+   "precision": 2
+  },
+  {
+   "iso": "EUR",
+   "name": "Euro",
+   "symbol": "€",
+   "icon": "Flag Euro",
+   "precision": 2
+  },
+  {
+   "iso": "GBP",
+   "name": "British Pound",
+   "symbol": "£",
+   "icon": "Flag GBP",
+   "precision": 2
+  },
+  {
+   "iso": "CNY",
+   "name": "Chinese Yuan",
+   "symbol": "¥",
+   "icon": "Flag CNY",
+   "precision": 2
+  },
+  {
+   "iso": "KZT",
+   "name": "Kazakhstani Tenge",
+   "symbol": "₸",
+   "icon": "Flag KZT",
+   "precision": 2
+  },
+  {
+   "iso": "BYN",
+   "name": "Belarusian Ruble",
+   "symbol": "Br",
+   "icon": "Flag BYN",
+   "precision": 2
+  },
+  {
+   "iso": "UAH",
+   "name": "Ukrainian Hryvnia",
+   "symbol": "₴",
+   "icon": "Flag UAH",
+   "precision": 2
+  },
+  {
+   "iso": "GEL",
+   "name": "Georgian Lari",
+   "symbol": "₾",
+   "icon": "Flag GEL",
+   "precision": 2
+  },
+  {
+   "iso": "AMD",
+   "name": "Armenian Dram",
+   "symbol": "֏",
+   "icon": "Flag AMD",
+   "precision": 2
+  },
+  {
+   "iso": "TRY",
+   "name": "Turkish Lira",
+   "symbol": "₺",
+   "icon": "Flag TRY",
+   "precision": 2
+  },
+  {
+   "iso": "RSD",
+   "name": "Serbian Dinar",
+   "symbol": "din.",
+   "icon": "Serbian flag",
+   "precision": 2
+  },
+  {
+   "iso": "PLN",
+   "name": "Polish Zloty",
+   "symbol": "zł",
+   "icon": "Flag PLN",
+   "precision": 2
+  },
+  {
+   "iso": "THB",
+   "name": "Thai Baht",
+   "symbol": "฿",
+   "icon": "Flag THB",
+   "precision": 2
+  },
+  {
+   "iso": "AED",
+   "name": "UAE Dirham",
+   "symbol": "AED",
+   "icon": "Flag AED",
+   "precision": 2
+  },
+  {
+   "iso": "BTC",
+   "name": "Bitcoin",
+   "symbol": "₿",
+   "icon": "Flag BTC",
+   "precision": 8
+  },
+  {
+   "iso": "LTC",
+   "name": "Litecoin",
+   "symbol": "Ł",
+   "icon": "Flag LTC",
+   "precision": 8
+  }
+ ],
+ "pairs": [
+  {
+   "symbol": "EURUSD",
+   "base": "EUR",
+   "quote": "USD"
+  },
+  {
+   "symbol": "USDRUB",
+   "base": "USD",
+   "quote": "RUB"
+  },
+  {
+   "symbol": "EURRUB",
+   "base": "EUR",
+   "quote": "RUB"
+  },
+  {
+   "symbol": "USDGBP",
+   "base": "USD",
+   "quote": "GBP"
+  },
+  {
+   "symbol": "EURGBP",
+   "base": "EUR",
+   "quote": "GBP"
+  },
+  {
+   "symbol": "USDCNY",
+   "base": "USD",
+   "quote": "CNY"
+  },
+  {
+   "symbol": "EURCNY",
+   "base": "EUR",
+   "quote": "CNY"
+  },
+  {
+   "symbol": "USDKZT",
+   "base": "USD",
+   "quote": "KZT"
+  },
+  {
+   "symbol": "EURKZT",
+   "base": "EUR",
+   "quote": "KZT"
+  },
+  {
+   "symbol": "USDBYN",
+   "base": "USD",
+   "quote": "BYN"
+  },
+  {
+   "symbol": "EURBYN",
+   "base": "EUR",
+   "quote": "BYN"
+  },
+  {
+   "symbol": "USDUAH",
+   "base": "USD",
+   "quote": "UAH"
+  },
+  {
+   "symbol": "EURUAH",
+   "base": "EUR",
+   "quote": "UAH"
+  },
+  {
+   "symbol": "USDGEL",
+   "base": "USD",
+   "quote": "GEL"
+  },
+  {
+   "symbol": "EURGEL",
+   "base": "EUR",
+   "quote": "GEL"
+  },
+  {
+   "symbol": "USDAMD",
+   "base": "USD",
+   "quote": "AMD"
+  },
+  {
+   "symbol": "EURAMD",
+   "base": "EUR",
+   "quote": "AMD"
+  },
+  {
+   "symbol": "USDTRY",
+   "base": "USD",
+   "quote": "TRY"
+  },
+  {
+   "symbol": "EURTRY",
+   "base": "EUR",
+   "quote": "TRY"
+  },
+  {
+   "symbol": "USDRSD",
+   "base": "USD",
+   "quote": "RSD"
+  },
+  {
+   "symbol": "EURRSD",
+   "base": "EUR",
+   "quote": "RSD"
+  },
+  {
+   "symbol": "USDPLN",
+   "base": "USD",
+   "quote": "PLN"
+  },
+  {
+   "symbol": "EURPLN",
+   "base": "EUR",
+   "quote": "PLN"
+  },
+  {
+   "symbol": "USDTHB",
+   "base": "USD",
+   "quote": "THB"
+  },
+  {
+   "symbol": "EURTHB",
+   "base": "EUR",
+   "quote": "THB"
+  },
+  {
+   "symbol": "USDAED",
+   "base": "USD",
+   "quote": "AED"
+  },
+  {
+   "symbol": "EURAED",
+   "base": "EUR",
+   "quote": "AED"
+  },
+  {
+   "symbol": "BTCUSD",
+   "base": "BTC",
+   "quote": "USD"
+  },
+  {
+   "symbol": "BTCEUR",
+   "base": "BTC",
+   "quote": "EUR"
+  },
+  {
+   "symbol": "LTCUSD",
+   "base": "LTC",
+   "quote": "USD"
+  },
+  {
+   "symbol": "LTCEUR",
+   "base": "LTC",
+   "quote": "EUR"
+  }
+ ]
+}
