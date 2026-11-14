@@ -163,6 +163,16 @@ TEST(ledger_data_tables_have_ledger_only_scope) {
     }
 }
 
+TEST(account_requires_category_kind_column) {
+    // change category-kind-income-expense, D4: колонка обязательная — без
+    // optional_columns, строка account без неё даёт 400 invalid_row.
+    const TableSpec* t = find(push_tables(), "account");
+    REQUIRE(t != nullptr);
+    CHECK(std::find(t->columns.begin(), t->columns.end(), "category_kind") != t->columns.end());
+    CHECK(std::find(t->optional_columns.begin(), t->optional_columns.end(), "category_kind") ==
+          t->optional_columns.end());
+}
+
 TEST(account_asset_requires_all_business_columns) {
     // design D2 capital-assets: все три поля обязательны (нет optional_columns).
     const TableSpec* t = find(push_tables(), "account_asset");
