@@ -11,4 +11,4 @@
 ## 3. Документация и выкатка
 
 - [x] 3.1 `README.md` («Набор иконок по умолчанию»: 89 иконок, две миграции) и `scripts/README.md`; спека `default-reference-icons` обновляется при архивации change
-- [ ] 3.2 Выкатить на test: накат `000038`, проверка в базе и `GET /sync/pull` потока `reference`
+- [x] 3.2 Выкатить на test: накат `000038`, проверка в базе и `GET /sync/pull` потока `reference` — выполнено 2026-11-14: `000038` выкачена вместе с `v0.4.3-rc.1` (wallet-api#32, история контура 09:44 UTC), `schema_migrations` = 39 (после `000039`), `Flag BTC` и `Flag LTC` в `icon` с `icon_type` = 1 без `deleted_at`; `GET /sync/pull?reference_seq=0` отдаёт обе иконки в `reference.changes.icon` (`ledger_id` = null, один `seq` = 2)
