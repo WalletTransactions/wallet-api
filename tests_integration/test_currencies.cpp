@@ -219,7 +219,7 @@ TEST(delete_currency_in_use_is_409) {
     std::string account = uuidgen::v4();
     json changes = {
         {"account", json::array({json{{"uuid", account}, {"name", "Wallet " + account}, {"comment", ""},
-                                      {"icon_uuid", icon}, {"is_archived", false}, {"system_kind", 0}, {"kind", 0}}})},
+                                      {"icon_uuid", icon}, {"is_archived", false}, {"system_kind", 0}, {"kind", 0}, {"category_kind", 2}}})},
         {"account_operating", json::array({json{{"uuid", account}, {"currency_uuid", wallet_currency}}})},
     };
     REQUIRE(sync_repo::push_batch(*db, identity.ledger_id, identity.device_id, uuidgen::v4(), changes).http_status == 200);

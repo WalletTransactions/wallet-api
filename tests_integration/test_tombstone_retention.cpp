@@ -52,7 +52,7 @@ bool row_exists(db::Database& db, const std::string& table, const std::string& u
 json account_row(const std::string& uuid, const std::string& icon_uuid) {
     return json{{"uuid", uuid},          {"name", "Tomb " + uuid}, {"comment", ""},
                 {"icon_uuid", icon_uuid}, {"is_archived", false},  {"system_kind", 0},
-                {"kind", 0}};
+                {"kind", 0},              {"category_kind", 2}};
 }
 
 json operation_row(const std::string& uuid, const std::string& from, const std::string& to) {

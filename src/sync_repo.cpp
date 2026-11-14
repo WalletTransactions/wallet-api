@@ -12,7 +12,7 @@ namespace sync_repo {
 
 const std::vector<TableSpec>& push_tables() {
     static const std::vector<TableSpec> tables = {
-        {"account", Scope::LedgerOnly, {"name", "comment", "icon_uuid", "is_archived", "system_kind", "kind"}},
+        {"account", Scope::LedgerOnly, {"name", "comment", "icon_uuid", "is_archived", "system_kind", "kind", "category_kind"}},
         {"account_operating", Scope::LedgerOnly, {"currency_uuid"}},
         // Признак капитального актива у кошелька (change capital-assets):
         // все три колонки обязательны — таблица новая, старых клиентов, что

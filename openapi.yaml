@@ -219,6 +219,7 @@ paths:
             не ошибка, а неверный тип (например, `due_date: "завтра"`) —
             `invalid_row`, `detail` называет поле.
             Значение вне закрытого набора (`account.system_kind` вне 0–3,
+            `account.category_kind` вне 0–2,
             `account_asset.asset_type` вне 1–3 — нарушение CHECK) — тоже
             `invalid_row`, `detail` называет ограничение.
             Транзакция батча в этом случае уже откачена целиком, как и при `409`.
@@ -1509,7 +1510,8 @@ components:
             is_archived: {type: boolean}
             system_kind: {type: integer, minimum: 0, maximum: 3, description: "0 = обычная категория/счёт, 1 = Transfer, 2 = Transfer commission, 3 = Revaluation («Переоценка» капитального актива: проводки между ней и активом — не доход и не расход) — явный признак вместо распознавания по name"}
             kind: {type: integer, minimum: 0, maximum: 1, description: "0 = категория, 1 = кошелёк — дублирует наличие строки в account_operating явным полем, проставляется один раз при создании и дальше не меняется"}
-          required: [name, comment, icon_uuid, is_archived, system_kind, kind]
+            category_kind: {type: integer, minimum: 0, maximum: 2, description: "Вид категории: 0 = расход, 1 = доход, 2 = оба. Для кошельков и системных категорий всегда 2. Изменяемое поле. Обязательное: строка без него — 400 invalid_row, значение вне 0–2 — тоже"}
+          required: [name, comment, icon_uuid, is_archived, system_kind, kind, category_kind]
 
     AccountOperatingPushRow:
       allOf:
@@ -1708,7 +1710,8 @@ components:
             is_archived: {type: boolean}
             system_kind: {type: integer, minimum: 0, maximum: 3, description: "0 = обычная категория/счёт, 1 = Transfer, 2 = Transfer commission, 3 = Revaluation («Переоценка» капитального актива: проводки между ней и активом — не доход и не расход) — явный признак вместо распознавания по name"}
             kind: {type: integer, minimum: 0, maximum: 1, description: "0 = категория, 1 = кошелёк — дублирует наличие строки в account_operating явным полем, проставляется один раз при создании и дальше не меняется"}
-          required: [name, comment, icon_uuid, is_archived, system_kind, kind]
+            category_kind: {type: integer, minimum: 0, maximum: 2, description: "Вид категории: 0 = расход, 1 = доход, 2 = оба. Для кошельков и системных категорий всегда 2. Изменяемое поле"}
+          required: [name, comment, icon_uuid, is_archived, system_kind, kind, category_kind]
 
     AccountOperatingPullRow:
       allOf:

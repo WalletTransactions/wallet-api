@@ -98,7 +98,7 @@ json make_account_row(const std::string& uuid, const std::string& icon_uuid,
     // (TableSpec account), не только конкретные значения.
     return json{{"uuid", uuid},          {"name", name},         {"comment", ""},
                 {"icon_uuid", icon_uuid}, {"is_archived", false}, {"system_kind", 0},
-                {"kind", 0}};
+                {"kind", 0},              {"category_kind", 2}};
 }
 
 json make_currency_row(const std::string& uuid, const std::string& icon_uuid,

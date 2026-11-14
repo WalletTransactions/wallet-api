@@ -45,6 +45,18 @@
 | `partitioning_pull_query_touches_a_single_operation_partition` | `EXPLAIN` выборки pull по `(ledger_id, seq)` называет ровно одну секцию `operation` — тест падает, если их больше |
 | `partitioning_report_function_reads_a_single_operation_partition` | `EXPLAIN` `f_balance_to_date` (встраиваемая SQL-функция) называет не больше одной секции `operation` |
 
+`test_category_kind.cpp` (change `category-kind-income-expense`, миграция
+000041) — вид категории `account.category_kind`:
+
+| Тест | Что проверяет |
+|---|---|
+| `category_kind_push_pull_round_trips_all_values` | push `account` с `category_kind` 0/1/2 — pull возвращает то же значение |
+| `category_kind_out_of_range_is_invalid_row_not_500` | `category_kind` = 3 — `400 invalid_row`, строка не записана |
+| `category_kind_missing_column_is_invalid_row_naming_the_field` | строка без `category_kind` — `400 invalid_row`, `detail` называет поле |
+| `category_kind_change_gets_new_seq_and_pulls` | смена вида существующей категории получает новый `seq` и приходит в pull с курсором старой версии |
+| `category_kind_column_defaults_to_2_in_database` | вставка в `account` без колонки даёт `category_kind` = 2 |
+| `category_kind_migration_marks_categories_by_live_operations` | файлы 000041 (down → up) в откатываемой транзакции: только доход → 1, только расход → 0, обе стороны / без операций / удалённые операции / системная категория / кошелёк → 2; изменённые строки получают один новый `seq`, `updated_by` NULL, строки с итогом 2 `seq` не меняют |
+
 `test_db_reconnect.cpp` (2026-11-13, общий код `util/pg_recover` из
 wallet-common) — переподключение `db::Database` после обрыва: backend
 убивается из второго соединения через `pg_terminate_backend`.
