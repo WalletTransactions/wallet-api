@@ -40,10 +40,25 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// Весь набор: то, что стоит в базе после ВСЕХ миграций набора (000037 и 000038).
 json manifest() { return json::parse(read_file(migrations_dir() + "/default_icons/manifest.json")); }
 
-std::string up_sql() { return read_file(migrations_dir() + "/000037_default_reference_icons.up.sql"); }
-std::string down_sql() { return read_file(migrations_dir() + "/000037_default_reference_icons.down.sql"); }
+// Иконки, которые добавляет именно миграция `since` (у записи нет поля since — это 37).
+json manifest_of(int since) {
+    json out = json::array();
+    for (const auto& e : manifest()) {
+        if (e.value("since", 37) == since) out.push_back(e);
+    }
+    return out;
+}
+
+std::string migration_file(int number, const char* direction) {
+    const char* name = number == 37 ? "default_reference_icons" : "default_reference_icons_btc_ltc";
+    return migrations_dir() + "/0000" + std::to_string(number) + "_" + name + "." + direction + ".sql";
+}
+
+std::string up_sql(int number = 37) { return read_file(migration_file(number, "up")); }
+std::string down_sql(int number = 37) { return read_file(migration_file(number, "down")); }
 
 std::string scalar(db::Database::Transaction& tx, const std::string& sql, const std::vector<std::string>& p = {}) {
     return tx.exec(sql, p).rows.at(0).fields.at(0);
@@ -163,7 +178,7 @@ TEST(default_icons_are_served_by_reference_pull_and_not_again_past_head) {
 
 TEST(default_icons_up_twice_changes_nothing) {
     auto db = fixture::open();
-    const json m = manifest();
+    const json m = manifest_of(37);
     auto tx = db->begin_transaction();
 
     auto before_count = set_icons_count(tx, m);
@@ -180,7 +195,7 @@ TEST(default_icons_up_twice_changes_nothing) {
 
 TEST(default_icons_up_after_down_restores_same_uuids_with_one_new_seq) {
     auto db = fixture::open();
-    const json m = manifest();
+    const json m = manifest_of(37);
     auto tx = db->begin_transaction();
 
     auto uuids_before = scalar(tx,
@@ -209,7 +224,7 @@ TEST(default_icons_up_after_down_restores_same_uuids_with_one_new_seq) {
 
 TEST(default_icons_up_keeps_admin_icon_with_same_name_in_other_case) {
     auto db = fixture::open();
-    const json m = manifest();
+    const json m = manifest_of(37);
     auto tx = db->begin_transaction();
 
     tx.exec(down_sql());
@@ -241,7 +256,7 @@ TEST(default_icons_up_ignores_deleted_namesake) {
 
 TEST(default_icons_down_removes_only_the_set_and_keeps_shared_blob) {
     auto db = fixture::open();
-    const json m = manifest();
+    const json m = manifest_of(37);
     auto tx = db->begin_transaction();
 
     // Иконка администратора вне набора и иконка на тот же blob, что у «Flag USD» набора.
@@ -262,4 +277,75 @@ TEST(default_icons_down_removes_only_the_set_and_keeps_shared_blob) {
     CHECK(scalar(tx, "SELECT count(*) FROM icon WHERE uuid = $1", {cinema}) == "1");
     CHECK(scalar(tx, "SELECT count(*) FROM blob WHERE sha256 = decode($1, 'hex')", {shared_sha}) == "1");
     CHECK(scalar(tx, "SELECT count(*) FROM blob WHERE sha256 = decode($1, 'hex')", {groceries_sha}) == "0");
+}
+
+// ── 000038_default_reference_icons_btc_ltc: флаги BTC и LTC, появившиеся после снимка 000037 ──
+
+TEST(default_icons_second_migration_adds_btc_and_ltc_flags) {
+    auto db = fixture::open();
+    const json second = manifest_of(38);
+    REQUIRE(second.size() == 2);
+
+    // После всех миграций оба флага стоят в базе как общие иконки-флаги.
+    for (const char* name : {"Flag BTC", "Flag LTC"}) {
+        CHECK(scalar(*db, "SELECT count(*) FROM icon WHERE ledger_id IS NULL AND deleted_at IS NULL AND "
+                          "lower(name) = lower($1) AND icon_type = 1", {name}) == "1");
+    }
+}
+
+TEST(default_icons_second_migration_down_up_touches_only_its_two_icons) {
+    auto db = fixture::open();
+    const json first = manifest_of(37);
+    const json second = manifest_of(38);
+    auto tx = db->begin_transaction();
+
+    auto first_before = set_icons_count(tx, first);
+    auto uuids_before = scalar(tx, "SELECT string_agg(uuid::text, ',' ORDER BY uuid) FROM icon WHERE ledger_id IS NULL "
+                                   "AND uuid IN (SELECT md5('reference-icon:' || lower(name))::uuid FROM (VALUES "
+                                   "('Flag BTC'), ('Flag LTC')) n(name))");
+
+    tx.exec(down_sql(38));
+    CHECK(set_icons_count(tx, second) == "0");
+    CHECK(set_icons_count(tx, first) == first_before); // 000037 не задет
+
+    auto seq_before = std::stoll(scalar(tx, std::string("SELECT seq FROM change_stream WHERE id = ") + kStream));
+    tx.exec(up_sql(38));
+    CHECK(set_icons_count(tx, second) == "2");
+    CHECK(scalar(tx, "SELECT string_agg(uuid::text, ',' ORDER BY uuid) FROM icon WHERE ledger_id IS NULL "
+                     "AND uuid IN (SELECT md5('reference-icon:' || lower(name))::uuid FROM (VALUES "
+                     "('Flag BTC'), ('Flag LTC')) n(name))") == uuids_before);
+    // Одна вставка — один новый seq на обе иконки.
+    CHECK(std::stoll(scalar(tx, std::string("SELECT seq FROM change_stream WHERE id = ") + kStream)) == seq_before + 1);
+}
+
+TEST(default_icons_second_migration_up_twice_changes_nothing) {
+    auto db = fixture::open();
+    const json second = manifest_of(38);
+    auto tx = db->begin_transaction();
+
+    auto seq_before = scalar(tx, std::string("SELECT seq FROM change_stream WHERE id = ") + kStream);
+    auto icons_before = scalar(tx, "SELECT count(*) FROM icon WHERE ledger_id IS NULL");
+
+    tx.exec(up_sql(38));
+
+    CHECK(set_icons_count(tx, second) == "2");
+    CHECK(scalar(tx, "SELECT count(*) FROM icon WHERE ledger_id IS NULL") == icons_before);
+    CHECK(scalar(tx, std::string("SELECT seq FROM change_stream WHERE id = ") + kStream) == seq_before);
+}
+
+TEST(default_icons_second_migration_keeps_admin_flag_with_same_name) {
+    auto db = fixture::open();
+    const json second = manifest_of(38);
+    auto tx = db->begin_transaction();
+
+    tx.exec(down_sql(38));
+    auto admin_uuid = admin_icon(tx, "flag btc", fixture::detail::random_hex64());
+    tx.exec(up_sql(38));
+
+    // «Flag BTC» набора пропущена — остаётся единственная живая, администратора.
+    CHECK(scalar(tx, "SELECT count(*) FROM icon WHERE ledger_id IS NULL AND deleted_at IS NULL AND "
+                     "lower(name) = 'flag btc'") == "1");
+    CHECK(scalar(tx, "SELECT uuid FROM icon WHERE ledger_id IS NULL AND deleted_at IS NULL AND "
+                     "lower(name) = 'flag btc'") == admin_uuid);
+    CHECK(set_icons_count(tx, second) == "1"); // добавлена только «Flag LTC»
 }

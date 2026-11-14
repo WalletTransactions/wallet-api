@@ -55,7 +55,8 @@ class ManifestTest(unittest.TestCase):
     def test_vector_flags_are_rasterized_to_64px(self):
         from PIL import Image
         vectors = [m for m in self.manifest if m["source"] in ("vector", "override")]
-        self.assertEqual(len(vectors), 11)
+        # 11 в 000037 + Flag BTC и Flag LTC из 000038
+        self.assertEqual(len(vectors), 13)
         self.assertEqual([m["file"] for m in vectors if m["source"] == "override"], ["flag_albania.png"])
         for m in vectors:
             with Image.open(os.path.join(gen.ICON_DIR, m["file"])) as im:
@@ -82,26 +83,53 @@ class SqlTest(unittest.TestCase):
         cls.manifest = gen.load_manifest()
 
     def test_committed_sql_is_what_the_generator_writes(self):
-        with open(gen.UP_SQL, encoding="utf-8") as f:
-            self.assertEqual(f.read(), gen.build_up(self.manifest), "up.sql правили руками или он устарел")
-        with open(gen.DOWN_SQL, encoding="utf-8") as f:
-            self.assertEqual(f.read(), gen.build_down(self.manifest), "down.sql правили руками или он устарел")
+        for number, subset in gen.migration_sets(self.manifest).items():
+            with open(gen.migration_path(number, "up"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), gen.build_up(subset, number),
+                                 f"{number}: up.sql правили руками или он устарел")
+            with open(gen.migration_path(number, "down"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), gen.build_down(subset, number),
+                                 f"{number}: down.sql правили руками или он устарел")
+
+    def test_every_migration_of_the_table_has_icons_and_a_file(self):
+        sets = gen.migration_sets(self.manifest)
+        self.assertEqual(sorted(sets), sorted(gen.MIGRATIONS), "в MIGRATIONS есть миграция без иконок или наоборот")
+
+    def test_a_name_is_added_by_exactly_one_migration(self):
+        seen = {}
+        for number, subset in gen.migration_sets(self.manifest).items():
+            for m in subset:
+                self.assertNotIn(m["name"].lower(), seen, f"{m['name']} в миграциях {seen.get(m['name'].lower())} и {number}")
+                seen[m["name"].lower()] = number
+        self.assertEqual(len(seen), len(self.manifest))
+
+    def test_first_migration_keeps_its_original_set(self):
+        # 000037 уже накатан: его набор (87 иконок) не должен ни расти, ни худеть.
+        first = gen.migration_sets(self.manifest)[gen.FIRST_MIGRATION]
+        self.assertEqual(len(first), 87)
 
     def test_up_sql_shape(self):
-        up = gen.build_up(self.manifest)
-        self.assertEqual(up.count("decode('"), len(self.manifest))
-        self.assertEqual(up.count("next_seq("), 1)
-        self.assertIn("sha256(d.bytes)", up)
-        self.assertIn("ON CONFLICT (sha256) DO NOTHING", up)
-        self.assertIn("ON CONFLICT (uuid) DO NOTHING", up)
-        self.assertIn("lower(i.name) = lower(d.name)", up)
-        self.assertIn(gen.REFERENCE_STREAM, up)
+        for number, subset in gen.migration_sets(self.manifest).items():
+            up = gen.build_up(subset, number)
+            self.assertEqual(up.count("decode('"), len(subset), number)
+            self.assertEqual(up.count("next_seq("), 1, number)
+            self.assertIn("sha256(d.bytes)", up)
+            self.assertIn("ON CONFLICT (sha256) DO NOTHING", up)
+            self.assertIn("ON CONFLICT (uuid) DO NOTHING", up)
+            self.assertIn("lower(i.name) = lower(d.name)", up)
+            self.assertIn(gen.REFERENCE_STREAM, up)
 
     def test_down_sql_lists_every_name_and_drops_only_orphan_blobs(self):
-        down = gen.build_down(self.manifest)
-        for m in self.manifest:
-            self.assertIn(gen.sql_text(m["name"]), down)
-        self.assertIn("NOT EXISTS (SELECT 1 FROM icon i WHERE i.content_sha256 = b.sha256)", down)
+        for number, subset in gen.migration_sets(self.manifest).items():
+            down = gen.build_down(subset, number)
+            for m in subset:
+                self.assertIn(gen.sql_text(m["name"]), down)
+            self.assertIn("NOT EXISTS (SELECT 1 FROM icon i WHERE i.content_sha256 = b.sha256)", down)
+
+    def test_second_migration_adds_btc_and_ltc_flags(self):
+        second = gen.migration_sets(self.manifest)[38]
+        self.assertEqual(sorted(m["name"] for m in second), ["Flag BTC", "Flag LTC"])
+        self.assertTrue(all(m["icon_type"] == gen.ICON_TYPE_FLAG for m in second))
 
 
 class VectorConversionTest(unittest.TestCase):
