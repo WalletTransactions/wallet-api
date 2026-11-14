@@ -23,6 +23,12 @@
 -- operation_link, и потому, что одиночный uuid в первичном ключе закрыл бы
 -- секционирование по ledger_id — PostgreSQL требует ключ секционирования в
 -- каждом уникальном ограничении. См. ../README.md, раздел «Объёмы».
+--
+-- Таблица секционирована: PARTITION BY HASH (ledger_id), 16 секций, тот же
+-- модуль, что у operation_link. Реальная миграция —
+-- migrations/000040_partition_operation.up.sql, решение —
+-- openspec/changes/partition-operation-by-ledger/design.md. Секции создаются
+-- в конце файла.
 CREATE TABLE operation (
     uuid        uuid        NOT NULL,
     ledger_id   uuid        NOT NULL REFERENCES ledger (id) ON DELETE CASCADE,
@@ -45,7 +51,25 @@ CREATE TABLE operation (
         FOREIGN KEY (ledger_id, acc_to_uuid) REFERENCES account (ledger_id, uuid)
         DEFERRABLE INITIALLY IMMEDIATE,
     CONSTRAINT ck_operation_sides CHECK (acc_fr_uuid <> acc_to_uuid)
-);
+) PARTITION BY HASH (ledger_id);
+
+-- Модуль 16, одинаковый у обеих таблиц. Удвоение — см. ../README.md.
+CREATE TABLE operation_p00 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 0);
+CREATE TABLE operation_p01 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 1);
+CREATE TABLE operation_p02 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 2);
+CREATE TABLE operation_p03 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 3);
+CREATE TABLE operation_p04 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 4);
+CREATE TABLE operation_p05 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 5);
+CREATE TABLE operation_p06 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 6);
+CREATE TABLE operation_p07 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 7);
+CREATE TABLE operation_p08 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 8);
+CREATE TABLE operation_p09 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 9);
+CREATE TABLE operation_p10 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 10);
+CREATE TABLE operation_p11 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 11);
+CREATE TABLE operation_p12 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 12);
+CREATE TABLE operation_p13 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 13);
+CREATE TABLE operation_p14 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 14);
+CREATE TABLE operation_p15 PARTITION OF operation FOR VALUES WITH (MODULUS 16, REMAINDER 15);
 
 CREATE INDEX ix_operation_sync ON operation (ledger_id, seq);
 

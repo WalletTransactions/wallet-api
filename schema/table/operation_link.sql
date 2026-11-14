@@ -46,7 +46,28 @@ CREATE TABLE operation_link (
     CONSTRAINT fk_operation_link_link
         FOREIGN KEY (ledger_id, link_uuid) REFERENCES operation (ledger_id, uuid) ON DELETE CASCADE,
     CONSTRAINT ck_operation_link_distinct CHECK (main_uuid <> link_uuid)
-);
+) PARTITION BY HASH (ledger_id);
+
+-- Секционирование — как у operation: HASH (ledger_id), модуль 16, тот же номер
+-- секции у строк одного леджера. Реальная миграция —
+-- migrations/000040_partition_operation.up.sql, решение —
+-- openspec/changes/partition-operation-by-ledger/design.md.
+CREATE TABLE operation_link_p00 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 0);
+CREATE TABLE operation_link_p01 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 1);
+CREATE TABLE operation_link_p02 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 2);
+CREATE TABLE operation_link_p03 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 3);
+CREATE TABLE operation_link_p04 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 4);
+CREATE TABLE operation_link_p05 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 5);
+CREATE TABLE operation_link_p06 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 6);
+CREATE TABLE operation_link_p07 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 7);
+CREATE TABLE operation_link_p08 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 8);
+CREATE TABLE operation_link_p09 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 9);
+CREATE TABLE operation_link_p10 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 10);
+CREATE TABLE operation_link_p11 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 11);
+CREATE TABLE operation_link_p12 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 12);
+CREATE TABLE operation_link_p13 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 13);
+CREATE TABLE operation_link_p14 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 14);
+CREATE TABLE operation_link_p15 PARTITION OF operation_link FOR VALUES WITH (MODULUS 16, REMAINDER 15);
 
 CREATE INDEX ix_operation_link_sync ON operation_link (ledger_id, seq);
 
