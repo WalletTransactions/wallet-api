@@ -520,5 +520,19 @@
   "icon_type": 1,
   "file": "flag_aed.png",
   "source": "vector"
+ },
+ {
+  "name": "Flag BTC",
+  "icon_type": 1,
+  "file": "flag_btc.png",
+  "source": "vector",
+  "since": 38
+ },
+ {
+  "name": "Flag LTC",
+  "icon_type": 1,
+  "file": "flag_ltc.png",
+  "source": "vector",
+  "since": 38
  }
 ]

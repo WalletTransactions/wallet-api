@@ -659,16 +659,20 @@ google-auth). Чтение набора — `GET /api/reports/admin/icons` в wa
 Полный контракт — `openapi.yaml`, тег `admin-icons`
 (`createReferenceIcon`/`updateReferenceIcon`/`deleteReferenceIcon`).
 
-### Набор иконок по умолчанию (миграция `000037_default_reference_icons`)
+### Набор иконок по умолчанию (миграции `000037_default_reference_icons`, `000038_default_reference_icons_btc_ltc`)
 
 Чтобы чистая база (например, после `test-refresh`) не оставалась без иконок
 — веб без флагов в форме валют, а телефон без серверных иконок-заместителей и
 с отложенным push (`icon-sync`, android-wallet#44), — общий набор лежит в самих
 миграциях (change `default-reference-icons`). Это снимок стартового набора
 телефона (`android-wallet` `seed.json`: категории Fluent 3D, флаги, запасная
-`unknown`; 87 иконок — 65 категорий с `icon_type` 2 и 22 флага с `icon_type`
-1): те же имена и те же картинки, поэтому `icon-sync` находит заместителей по
-хешу или по имени.
+`unknown`): те же имена и те же картинки, поэтому `icon-sync` находит
+заместителей по хешу или по имени. `000037` — снимок на 2026-11-13: 87 иконок,
+65 категорий с `icon_type` 2 и 22 флага с `icon_type` 1. `000038` добавляет
+флаги `Flag BTC` и `Flag LTC` (валюты BTC и LTC стартового набора,
+`new-user-default-set`), всего 89 иконок. Иконки кошельков стартового набора
+(«Наличные / Cash» — `USD banknote`, «Кредитная карта / Credit card» —
+`Visa card`) уже есть в `000037`.
 
 - **Что делает миграция.** В `blob` кладёт байты картинок (`sha256` считает
   база), в `icon` — общие иконки с детерминированным
@@ -679,13 +683,16 @@ google-auth). Чтение набора — `GET /api/reports/admin/icons` в wa
   Повторный накат дублей не создаёт.
 - **Откат** (`down`) убирает только иконки набора (по `uuid`) и осиротевшие
   `blob`; иконки администратора и общий с ними `blob` остаются.
-- **Файлы не правятся руками.** `000037_*.up/down.sql` генерирует
-  `scripts/gen_default_icons.py` из `migrations/default_icons/`
-  (`manifest.json` и PNG, 11 векторных флагов телефона растеризованы в PNG
-  64×64). Пересобрать набор после изменения стартового набора телефона —
-  новой миграцией, а не правкой `000037`:
-  `python3 scripts/gen_default_icons.py collect --android ../android-wallet`
-  (нужен `cairosvg` в виртуальном окружении), затем
+- **Файлы не правятся руками.** `000037_*.up/down.sql` и `000038_*.up/down.sql`
+  генерирует `scripts/gen_default_icons.py` из `migrations/default_icons/`
+  (`manifest.json` и PNG, векторные флаги телефона растеризованы в PNG 64×64);
+  у записи манифеста поле `since` — номер миграции, которая её добавила (нет
+  поля — 37). Расширить набор после изменения стартового набора телефона —
+  новой миграцией, а не правкой накатанной: добавить номер в `MIGRATIONS`
+  генератора, затем
+  `python3 scripts/gen_default_icons.py collect --android ../android-wallet --since N`
+  (нужен `cairosvg` в виртуальном окружении; `collect` только добавляет
+  новые имена, картинки уже собранных не пересоздаёт) и
   `python3 scripts/gen_default_icons.py build`; описание — `scripts/README.md`.
 
 ## Отчёты — выделены в отдельный сервис

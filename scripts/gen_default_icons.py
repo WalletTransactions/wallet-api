@@ -4,15 +4,18 @@
 Набор — снимок стартового набора телефона (android-wallet/app/src/main/assets/seed.json):
 категории Fluent 3D, флаги, запасная иконка `unknown`. Два режима:
 
-  collect --android <папка android-wallet>
-      читает seed.json и res/drawable, кладёт PNG в migrations/default_icons/
-      (готовые PNG копирует, векторные флаги Android XML растеризует в PNG 64x64)
-      и пишет migrations/default_icons/manifest.json. Растеризации нужен cairosvg
+  collect --android <папка android-wallet> [--since N]
+      читает seed.json и res/drawable и ДОБАВЛЯЕТ в migrations/default_icons/ PNG и
+      записи манифеста для имён, которых там ещё нет (готовые PNG копирует, векторные
+      флаги Android XML растеризует в PNG 64x64); новые записи получают since = N
+      (по умолчанию — последняя миграция из MIGRATIONS). Уже собранные иконки не
+      пересоздаются: их байты вшиты в накатанные миграции. Растеризации нужен cairosvg
       (`pip install cairosvg` в виртуальном окружении), больше ничего.
 
   build
-      по manifest.json и PNG пишет migrations/000037_default_reference_icons.up.sql
-      и .down.sql. android-wallet для этого не нужен: набор воспроизводится из репозитория.
+      по manifest.json и PNG пишет migrations/0000NN_*.up.sql и .down.sql — по одной
+      паре на каждый `since` манифеста (37, 38, …). android-wallet для этого не нужен:
+      набор воспроизводится из репозитория.
 
 SQL руками не правится — только этим скриптом (README.md, раздел «Миграции»).
 """
@@ -31,8 +34,18 @@ ICON_DIR = os.path.join(ROOT, "migrations", "default_icons")
 MANIFEST = os.path.join(ICON_DIR, "manifest.json")
 # Готовые PNG, которые заменяют растеризацию вектора с телефона (имя файла = resource).
 OVERRIDE_DIR = os.path.join(ROOT, "scripts", "icon_overrides")
-UP_SQL = os.path.join(ROOT, "migrations", "000037_default_reference_icons.up.sql")
-DOWN_SQL = os.path.join(ROOT, "migrations", "000037_default_reference_icons.down.sql")
+# Миграции набора: номер -> суффикс имени файла. Запись манифеста несёт `since` — номер
+# миграции, которая её добавила (нет поля — 37). Набор — снимок: новые иконки телефона
+# идут в НОВУЮ миграцию, уже накатанные файлы не переписываются.
+MIGRATIONS = {
+    37: "default_reference_icons",
+    38: "default_reference_icons_btc_ltc",
+}
+FIRST_MIGRATION = 37
+
+
+def migration_path(number, direction):
+    return os.path.join(ROOT, "migrations", f"{number:06d}_{MIGRATIONS[number]}.{direction}.sql")
 
 ICON_TYPE_CATEGORY = 2  # как у телефона: «1 — флаг, остальное — категория» (openapi, createReferenceIcon)
 ICON_TYPE_FLAG = 1
@@ -134,19 +147,23 @@ def rasterize(xml_path, png_path):
                      output_width=FLAG_SIZE, output_height=FLAG_SIZE)
 
 
-def cmd_collect(android):
+def cmd_collect(android, since):
+    if since not in MIGRATIONS:
+        sys.exit(f"--since {since}: нет такой миграции в MIGRATIONS ({sorted(MIGRATIONS)})")
     seed_path = os.path.join(android, "app", "src", "main", "assets", "seed.json")
     drawable = os.path.join(android, "app", "src", "main", "res", "drawable")
     with open(seed_path, encoding="utf-8") as f:
         entries = collect_entries(json.load(f))
 
     os.makedirs(ICON_DIR, exist_ok=True)
-    for old in os.listdir(ICON_DIR):
-        if old.endswith(".png"):
-            os.remove(os.path.join(ICON_DIR, old))
-
-    manifest = []
+    # Добавляющий режим: имена, что уже в манифесте, не трогаем — их PNG вшиты в накатанную
+    # миграцию, и пересоздание (другая версия cairosvg, другой флаг) поменяло бы её содержимое.
+    manifest = load_manifest() if os.path.exists(MANIFEST) else []
+    known = {m["name"].lower() for m in manifest}
+    added = []
     for name, (resource, icon_type) in entries.items():
+        if name.lower() in known:
+            continue
         png_src = os.path.join(drawable, resource + ".png")
         xml_src = os.path.join(drawable, resource + ".xml")
         target = os.path.join(ICON_DIR, resource + ".png")
@@ -165,7 +182,11 @@ def cmd_collect(android):
         size = os.path.getsize(target)
         if size > MAX_BLOB_BYTES:
             sys.exit(f"{resource}.png — {size} байт, больше лимита blob {MAX_BLOB_BYTES}")
-        manifest.append({"name": name, "icon_type": icon_type, "file": resource + ".png", "source": source})
+        entry = {"name": name, "icon_type": icon_type, "file": resource + ".png", "source": source}
+        if since != FIRST_MIGRATION:
+            entry["since"] = since
+        manifest.append(entry)
+        added.append(name)
 
     with open(MANIFEST, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1)
@@ -173,7 +194,7 @@ def cmd_collect(android):
     flags = sum(1 for m in manifest if m["icon_type"] == ICON_TYPE_FLAG)
     vectors = sum(1 for m in manifest if m["source"] == "vector")
     print(f"манифест: {len(manifest)} иконок ({len(manifest) - flags} категорий, {flags} флагов, "
-          f"из них растеризовано векторов: {vectors})")
+          f"из них растеризовано векторов: {vectors}); добавлено в миграцию {since}: {len(added)} {added}")
 
 
 # ── build ────────────────────────────────────────────────────────────────────
@@ -191,7 +212,34 @@ def load_manifest():
     return manifest
 
 
-def build_up(manifest):
+def migration_sets(manifest):
+    """Номер миграции -> записи манифеста, которые она добавляет (порядок манифеста)."""
+    sets = {}
+    for m in manifest:
+        number = m.get("since", FIRST_MIGRATION)
+        if number not in MIGRATIONS:
+            sys.exit(f"{m['name']}: since {number} нет в MIGRATIONS ({sorted(MIGRATIONS)})")
+        sets.setdefault(number, []).append(m)
+    return dict(sorted(sets.items()))
+
+
+def up_header(number):
+    if number == FIRST_MIGRATION:
+        return """-- default-reference-icons (wallet-api/openspec/changes/default-reference-icons):
+-- общий набор иконок по умолчанию — снимок стартового набора телефона
+-- (android-wallet seed.json: категории Fluent 3D, флаги, запасная `unknown`).
+-- Файл СГЕНЕРИРОВАН scripts/gen_default_icons.py из migrations/default_icons/ —
+-- руками не править (README.md, раздел «Миграции»).
+--"""
+    return f"""-- {number:06d}_{MIGRATIONS[number]}: иконки, которые появились в стартовом наборе
+-- телефона (android-wallet seed.json) после {FIRST_MIGRATION:06d}_{MIGRATIONS[FIRST_MIGRATION]} и тем самым после его снимка.
+-- Набор — снимок: прежние миграции не переписываются, новое едет новой миграцией.
+-- Файл СГЕНЕРИРОВАН scripts/gen_default_icons.py из migrations/default_icons/ —
+-- руками не править (README.md, раздел «Миграции»).
+--"""
+
+
+def build_up(manifest, number=FIRST_MIGRATION):
     rows = []
     for m in manifest:
         with open(os.path.join(ICON_DIR, m["file"]), "rb") as f:
@@ -200,12 +248,7 @@ def build_up(manifest):
             sys.exit(f"{m['file']} больше лимита blob")
         rows.append(f"        ({sql_text(m['name'])}, {m['icon_type']}, "
                     f"decode('{base64.b64encode(data).decode('ascii')}', 'base64'))")
-    return f"""-- default-reference-icons (wallet-api/openspec/changes/default-reference-icons):
--- общий набор иконок по умолчанию — снимок стартового набора телефона
--- (android-wallet seed.json: категории Fluent 3D, флаги, запасная `unknown`).
--- Файл СГЕНЕРИРОВАН scripts/gen_default_icons.py из migrations/default_icons/ —
--- руками не править (README.md, раздел «Миграции»).
---
+    return f"""{up_header(number)}
 -- Что делает:
 --  * blob — байты картинок, sha256 считает база (sha256(bytes)), повтор — ON CONFLICT DO NOTHING;
 --  * icon — общие иконки (ledger_id IS NULL) с детерминированным uuid
@@ -247,9 +290,9 @@ $$;
 """
 
 
-def build_down(manifest):
+def build_down(manifest, number=FIRST_MIGRATION):
     names = ",\n".join(f"        ({sql_text(m['name'])})" for m in manifest)
-    return f"""-- Откат 000037 default_reference_icons: удаляет только иконки этого набора (по
+    return f"""-- Откат {number:06d} {MIGRATIONS[number]}: удаляет только иконки этого набора (по
 -- детерминированным uuid md5('reference-icon:' || lower(name))) и blob, на которые
 -- после этого никто не ссылается. Иконки администратора (другие uuid) и blob,
 -- общий с чужой иконкой, не трогаются. seq потока reference назад не возвращается;
@@ -279,12 +322,14 @@ $$;
 
 def cmd_build():
     manifest = load_manifest()
-    with open(UP_SQL, "w", encoding="utf-8", newline="\n") as f:
-        f.write(build_up(manifest))
-    with open(DOWN_SQL, "w", encoding="utf-8", newline="\n") as f:
-        f.write(build_down(manifest))
-    digest = hashlib.sha256(open(UP_SQL, "rb").read()).hexdigest()[:12]
-    print(f"{os.path.basename(UP_SQL)}: {os.path.getsize(UP_SQL)} байт (sha256 {digest}), иконок {len(manifest)}")
+    for number, subset in migration_sets(manifest).items():
+        up, down = migration_path(number, "up"), migration_path(number, "down")
+        with open(up, "w", encoding="utf-8", newline="\n") as f:
+            f.write(build_up(subset, number))
+        with open(down, "w", encoding="utf-8", newline="\n") as f:
+            f.write(build_down(subset, number))
+        digest = hashlib.sha256(open(up, "rb").read()).hexdigest()[:12]
+        print(f"{os.path.basename(up)}: {os.path.getsize(up)} байт (sha256 {digest}), иконок {len(subset)}")
 
 
 def main():
@@ -292,10 +337,12 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("--android", required=True, help="папка репозитория android-wallet")
+    c.add_argument("--since", type=int, default=max(MIGRATIONS),
+                   help="номер миграции для новых иконок (по умолчанию последняя из MIGRATIONS)")
     sub.add_parser("build")
     args = parser.parse_args()
     if args.cmd == "collect":
-        cmd_collect(args.android)
+        cmd_collect(args.android, args.since)
     else:
         cmd_build()
 
