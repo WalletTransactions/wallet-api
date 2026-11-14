@@ -60,6 +60,13 @@ std::string migration_file(int number, const char* direction) {
 std::string up_sql(int number = 37) { return read_file(migration_file(number, "up")); }
 std::string down_sql(int number = 37) { return read_file(migration_file(number, "down")); }
 
+// Валюты общего справочника (000039) ссылаются на иконки-флаги (currency.icon_uuid, NO ACTION),
+// поэтому в боевом откате 000039 идёт ПЕРВОЙ, а откат иконок — после неё. Тесты, что откатывают
+// иконки по отдельности, повторяют этот порядок внутри своей транзакции.
+void roll_back_currencies_first(db::Database::Transaction& tx) {
+    tx.exec(read_file(migrations_dir() + "/000039_default_reference_currencies.down.sql"));
+}
+
 std::string scalar(db::Database::Transaction& tx, const std::string& sql, const std::vector<std::string>& p = {}) {
     return tx.exec(sql, p).rows.at(0).fields.at(0);
 }
@@ -197,6 +204,7 @@ TEST(default_icons_up_after_down_restores_same_uuids_with_one_new_seq) {
     auto db = fixture::open();
     const json m = manifest_of(37);
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     auto uuids_before = scalar(tx,
                                "SELECT string_agg(uuid::text, ',' ORDER BY uuid) FROM icon WHERE ledger_id IS NULL AND "
@@ -226,6 +234,7 @@ TEST(default_icons_up_keeps_admin_icon_with_same_name_in_other_case) {
     auto db = fixture::open();
     const json m = manifest_of(37);
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     tx.exec(down_sql());
     auto admin_uuid = admin_icon(tx, "groceries", fixture::detail::random_hex64());
@@ -243,6 +252,7 @@ TEST(default_icons_up_keeps_admin_icon_with_same_name_in_other_case) {
 TEST(default_icons_up_ignores_deleted_namesake) {
     auto db = fixture::open();
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     tx.exec(down_sql());
     admin_icon(tx, "Groceries", fixture::detail::random_hex64(), /*deleted=*/true);
@@ -258,6 +268,7 @@ TEST(default_icons_down_removes_only_the_set_and_keeps_shared_blob) {
     auto db = fixture::open();
     const json m = manifest_of(37);
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     // Иконка администратора вне набора и иконка на тот же blob, что у «Flag USD» набора.
     auto cinema = admin_icon(tx, "Cinema-" + uuidgen::v4().substr(0, 8), fixture::detail::random_hex64());
@@ -298,6 +309,7 @@ TEST(default_icons_second_migration_down_up_touches_only_its_two_icons) {
     const json first = manifest_of(37);
     const json second = manifest_of(38);
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     auto first_before = set_icons_count(tx, first);
     auto uuids_before = scalar(tx, "SELECT string_agg(uuid::text, ',' ORDER BY uuid) FROM icon WHERE ledger_id IS NULL "
@@ -337,6 +349,7 @@ TEST(default_icons_second_migration_keeps_admin_flag_with_same_name) {
     auto db = fixture::open();
     const json second = manifest_of(38);
     auto tx = db->begin_transaction();
+    roll_back_currencies_first(tx);
 
     tx.exec(down_sql(38));
     auto admin_uuid = admin_icon(tx, "flag btc", fixture::detail::random_hex64());
