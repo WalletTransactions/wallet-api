@@ -44,6 +44,7 @@ add_executable(wallet_api_tests
     ${WALLET_COMMON_DIR}/util/jwt.cpp
     ${WALLET_COMMON_DIR}/util/jwks.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/pg_recover.cpp
 )
 
 target_include_directories(wallet_api_tests PRIVATE

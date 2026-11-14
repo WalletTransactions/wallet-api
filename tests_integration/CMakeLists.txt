@@ -64,6 +64,7 @@ add_executable(wallet_api_integration_tests
     test_tombstone_retention.cpp
     test_debts_reports.cpp
     test_default_icons.cpp
+    test_db_reconnect.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
@@ -83,6 +84,7 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/account_deletion_repo.cpp
     ${WALLET_COMMON_DIR}/util/uuid.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/pg_recover.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp
     # crypto.cpp (wallet-common) — RsaSigningKey::kid() кодирует base64.
     ${WALLET_COMMON_DIR}/util/base64.cpp

@@ -31,6 +31,17 @@
 | `browser_device_provisions_as_web_and_pushes_operation` | Браузерная сессия с `device_id` (add-ai-expense-text, google-auth выдаёт его на каждый вход): провижининг заводит устройство `platform=web` в леджере пользователя, `push` операции проходит `200`, `operation.updated_by` — это устройство |
 | `push_missing_reference_self_heals_when_client_resends_referenced_row` | Тот же инцидент — второй push, довозящий именно названные `table`/`uuid` вместе с исходной `currency_pair` (то, что теперь делает Android `SyncEngine.pushDirty` при получении такого 409), обязан пройти `200` |
 
+`test_db_reconnect.cpp` (2026-11-13, общий код `util/pg_recover` из
+wallet-common) — переподключение `db::Database` после обрыва: backend
+убивается из второго соединения через `pg_terminate_backend`.
+
+| Тест | Что проверяет |
+|---|---|
+| `reconnect_first_query_after_backend_terminated_succeeds` | **Главная цель.** Первый запрос после рестарта БД проходит без ошибки (раньше `PQstatus` оставался `CONNECTION_OK`, а запрос падал «server closed the connection unexpectedly») |
+| `reconnect_read_survives_termination_in_the_middle_of_query` | Чтение, оборванное прямо в ходе запроса, повторяется один раз на новом соединении |
+| `reconnect_write_is_not_retried_when_connection_dies_mid_query` | Запись в этом случае — ошибка без автоповтора (клиент не знает, выполнил ли её сервер): строка не применена и не продублирована, следующий запрос работает |
+| `reconnect_inside_transaction_reports_error_instead_of_silent_reset` | Внутри транзакции `PQreset` не вызывается (потерял бы `BEGIN`) — вызывающий получает ошибку |
+
 Тесты `reports_repo.hpp` (`test_reports.cpp`) переехали вместе с самими
 отчётами в [wallet-report](https://github.com/WalletTransactions/wallet-report) (2026-09-08, CQRS-lite) —
 см. его `tests_integration/README.md`.

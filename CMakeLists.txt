@@ -107,6 +107,7 @@ add_executable(wallet_api
     ${WALLET_COMMON_DIR}/util/dotenv.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
     ${WALLET_COMMON_DIR}/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/pg_recover.cpp
 )
 
 target_include_directories(wallet_api PRIVATE
