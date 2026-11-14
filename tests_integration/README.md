@@ -31,6 +31,20 @@
 | `browser_device_provisions_as_web_and_pushes_operation` | Браузерная сессия с `device_id` (add-ai-expense-text, google-auth выдаёт его на каждый вход): провижининг заводит устройство `platform=web` в леджере пользователя, `push` операции проходит `200`, `operation.updated_by` — это устройство |
 | `push_missing_reference_self_heals_when_client_resends_referenced_row` | Тот же инцидент — второй push, довозящий именно названные `table`/`uuid` вместе с исходной `currency_pair` (то, что теперь делает Android `SyncEngine.pushDirty` при получении такого 409), обязан пройти `200` |
 
+`test_partitioning.cpp` (change `partition-operation-by-ledger`, миграция
+000040) — `operation`/`operation_link` секционированы `HASH (ledger_id)`:
+
+| Тест | Что проверяет |
+|---|---|
+| `partitioning_operations_and_links_of_one_ledger_share_partition_number` | Операции и связи одного леджера лежат в одной секции каждой таблицы, и номер секции у `operation_pNN` и `operation_link_pNN` совпадает (`tableoid::regclass`), для двух леджеров |
+| `partitioning_any_new_ledger_accepts_its_first_operation` | 20 новых леджеров со случайными uuid принимают операцию (набор секций покрывает любой остаток), и попадают больше чем в одну секцию |
+| `partitioning_repeated_push_of_same_operation_does_not_duplicate` | Повторный push того же `(ledger_id, uuid)` обновляет строку, дубля нет |
+| `partitioning_foreign_ledger_account_is_rejected_with_missing_reference` | Операция со счётом чужого леджера — `409 missing_reference`, строка не записана |
+| `partitioning_deleting_ledger_wipes_operations_and_links` | `account_deletion_repo::delete_own_account` оставляет 0 строк в обеих таблицах |
+| `partitioning_physical_delete_of_operation_cascades_to_links` | `DELETE` операции каскадно снимает ссылающиеся на неё связи |
+| `partitioning_pull_query_touches_a_single_operation_partition` | `EXPLAIN` выборки pull по `(ledger_id, seq)` называет ровно одну секцию `operation` — тест падает, если их больше |
+| `partitioning_report_function_reads_a_single_operation_partition` | `EXPLAIN` `f_balance_to_date` (встраиваемая SQL-функция) называет не больше одной секции `operation` |
+
 `test_db_reconnect.cpp` (2026-11-13, общий код `util/pg_recover` из
 wallet-common) — переподключение `db::Database` после обрыва: backend
 убивается из второго соединения через `pg_terminate_backend`.

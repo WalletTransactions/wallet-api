@@ -93,9 +93,15 @@
 4. `INSERT INTO operation_new SELECT * FROM operation`, затем то же для
    `operation_link`. Вставка не меняет `updated_at`: это INSERT, а триггер
    висит на UPDATE.
-5. `DROP VIEW` зависимых вьюх. Список берётся из `pg_depend` на момент
-   реализации, ожидаются `v_operation`, `v_operation_eq` и производные. Затем
-   `DROP TABLE operation_link`, `DROP TABLE operation`.
+5. `DROP VIEW` зависимых вьюх. Список снят из `pg_depend` на test
+   (2026-11-14): прямая зависимость только `v_operation`, на ней построена
+   `v_operation_eq` — порядок удаления `v_operation_eq`, затем `v_operation`
+   (создание — обратный). Материализованных представлений нет. Других FK на
+   `operation`/`operation_link`, кроме перечисленных в Context, нет; автоимена
+   FK, которые надо сохранить: `operation_ledger_id_fkey`,
+   `operation_updated_by_fkey`, `operation_link_ledger_id_fkey`,
+   `operation_link_updated_by_fkey`. Затем `DROP TABLE operation_link`,
+   `DROP TABLE operation`.
 6. `ALTER TABLE … RENAME` новых таблиц в старые имена. Затем на родителях
    создаются ограничения и индексы с прежними именами: `pk_operation`,
    `fk_operation_acc_fr/acc_to` (DEFERRABLE), FK на `ledger`/`device`, CHECK,
@@ -159,6 +165,17 @@ HASH (ledger_id)` и блок секций. В шапке — ссылка на 
   разбирались. Интеграционным тестом проверить, что android-wallet
   (`SyncEngine.parseMissingReference`) и `sync_repo` не завязаны на имя
   ссылающейся таблицы.
+  **Проверено 2026-11-14 (grep по android-wallet, wallet-telegram, wallet-api,
+  wallet-report):** `SyncEngine.parseMissingReference` читает только
+  `error`/`table`/`uuid` тела 409 и сверяет `table` со своим `TABLE_ORDER` — ни
+  имени ссылающейся таблицы, ни constraint не использует. В `sync_repo.cpp`
+  `constraint_name` сравнивается только с `kUniqueNames` (`uq_account_name`,
+  `uq_counterparty_name` — несекционированные таблицы); для `operation_link`
+  23505 уходит в общий `duplicate_key` с `constraint` как справочным полем,
+  которое никто не разбирает. Прочие совпадения по `fk_operation*` —
+  `account_deletion_repo.cpp` (`SET CONSTRAINTS ... DEFERRED` по имени родителя;
+  тест удаления леджера зелёный) и DDL SQLite в `WalletDbHelper` (локальная
+  база клиента, к серверу не относится). Правок кода не требуется.
 - [Generic-план в SQL-функциях отчётов может не отсечь секции] →
   runtime pruning работает и для параметров. Проверка — `EXPLAIN (ANALYZE)`
   по каждой `f_*` на test, в плане должно быть `Subplans Removed: 15`.
