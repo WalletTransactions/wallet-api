@@ -27,7 +27,7 @@
 
 ## 5. Prod
 
-- [ ] 5.1 Выкат на prod штатным путём (дамп перед миграцией — `deploy.sh`). Проверка: дамп лежит в `${WALLET_BACKUP_DIR}/prod/wallet/`, smoke зелёный, `\d+ operation` на prod — секционирована, синк с телефона проходит
+- [x] 5.1 Выкат на prod штатным путём (дамп перед миграцией — `deploy.sh`). Проверка: дамп лежит в `${WALLET_BACKUP_DIR}/prod/wallet/`, smoke зелёный, `\d+ operation` на prod — секционирована, синк с телефона проходит. Выкачено 2026-11-14 (0.4.5): дамп `20261114T211810_wallet-api-0.4.5.dump`, на prod `operation`/`operation_link` — `relkind=p`, 16 секций, миграция 40; синк с телефона отдельно не гонялся (на prod 0 операций)
 
 ## Workflow follow-up
 
