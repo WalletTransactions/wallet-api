@@ -26,6 +26,7 @@
 #include "blob.hpp"
 #include "currencies.hpp"
 #include "currency_pairs.hpp"
+#include "currency_routes.hpp"
 #include "docs.hpp"
 #include "httplib.h"
 #include "invites.hpp"
@@ -245,6 +246,7 @@ int main() {
     blobapi::register_routes(svr, state);
     invitesapi::register_routes(svr, state); // Фаза 6: /api/ledger/*, /api/invites/accept
     currency_pairs_api::register_routes(svr, state); // "Курсы валют": /api/currency-pairs*
+    currency_routes_api::register_routes(svr, state); // маршруты пересчёта валют: /api/currency-routes*
     currencies_api::register_routes(svr, state); // свои валюты: /api/currencies*
     account_deletion_api::register_routes(svr, state); // "Удалить аккаунт": DELETE /api/account
     reference_icons_api::register_routes(svr, state); // общий набор иконок (admin): /api/admin/icons*

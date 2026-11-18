@@ -49,11 +49,5 @@ SELECT o.ledger_id,
        ) tc
   LEFT JOIN LATERAL (
         SELECT rr."date", rr.rate
-          FROM v_currency_conversion_rate rr
-         WHERE rr.from_currency_uuid = o.currency_uuid
-           AND rr.to_currency_uuid   = tc.uuid
-           AND rr."date"            <= o."date"::date
-           AND (rr.ledger_id IS NULL OR rr.ledger_id = o.ledger_id)
-         ORDER BY rr."date" DESC, (rr.ledger_id IS NULL)
-         LIMIT 1
+          FROM rate_on(o.ledger_id, o.currency_uuid, tc.uuid, o."date"::date) rr
        ) r ON true;

@@ -189,6 +189,18 @@ bool delete_pair(db::Database& db, const std::string& ledger_id, const std::stri
         "UPDATE currency_pair_rate SET deleted_at = now(), seq = $1 "
         "WHERE currency_pair_uuid = $2 AND deleted_at IS NULL",
         {seq, pair_uuid});
+    // Маршруты пересчёта, шаги которых используют пару, — целиком (все шаги
+    // маршрута, не только шаг с этой парой), тем же seq: оставшийся без пары
+    // маршрут после пересоздания пары (новый uuid) висел бы оборванным
+    // навсегда (change currency-conversion-routes, design D5). Пара своя, значит
+    // и маршруты только этого леджера.
+    tx.exec(
+        "UPDATE currency_conversion SET deleted_at = now(), seq = $1 "
+        "WHERE ledger_id = $3 AND deleted_at IS NULL "
+        "AND (from_currency_uuid, to_currency_uuid) IN ("
+        "    SELECT from_currency_uuid, to_currency_uuid FROM currency_conversion "
+        "    WHERE ledger_id = $3 AND deleted_at IS NULL AND currency_pair_uuid = $2)",
+        {seq, pair_uuid, ledger_id});
     tx.commit();
     return true;
 }

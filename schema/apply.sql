@@ -65,6 +65,10 @@
 \ir view/v_account_expanse.sql
 \ir view/v_currency_conversion.sql
 \ir view/v_currency_conversion_rate.sql
+-- rate_on — между вьюхой курса и v_operation_eq: тело SQL-функции разбирается при
+-- создании (читает v_currency_conversion_rate), а v_operation_eq читает rate_on.
+\ir function/rate_fallback.sql
+\ir function/rate_on.sql
 \ir view/v_operation.sql
 \ir view/v_operation_eq.sql
 
