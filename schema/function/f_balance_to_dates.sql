@@ -137,13 +137,7 @@ AS $$
     date_rates AS MATERIALIZED (
         SELECT d.idx, c.uuid AS currency_uuid,
                (SELECT rr.rate
-                  FROM v_currency_conversion_rate rr
-                 WHERE rr.from_currency_uuid = c.uuid
-                   AND rr.to_currency_uuid   = p_eq_currency
-                   AND rr."date"            <= d.balance_date::date
-                   AND (rr.ledger_id IS NULL OR rr.ledger_id = p_ledger_id)
-                 ORDER BY rr."date" DESC, (rr.ledger_id IS NULL)
-                 LIMIT 1) AS rate
+                  FROM rate_on(p_ledger_id, c.uuid, p_eq_currency, d.balance_date::date) rr) AS rate
           FROM dates d
           CROSS JOIN (
                 SELECT DISTINCT currency_uuid FROM v_account_operating WHERE ledger_id = p_ledger_id

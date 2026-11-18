@@ -43,7 +43,12 @@ const std::vector<TableSpec>& push_tables() {
          {"currency_pair_uuid", "date", "rate"}, {"rate"}, {}, {"date"},
          {"ledger_id", "currency_pair_uuid", "date"},
          "ledger_id IS NOT NULL AND deleted_at IS NULL"},
-        {"currency_conversion", Scope::ReferenceOrLedger,
+        // Шаг маршрута пересчёта (change currency-conversion-routes, миграция
+        // 000043): маршрут from -> to — цепочка строк с num 1..3, принадлежит
+        // леджеру, общих маршрутов нет. Построчные проверки — validate_row()
+        // (num, from <> to, is_reverse); целостность цепочки при push НЕ
+        // проверяется — шаги могут приходить разными батчами.
+        {"currency_conversion", Scope::LedgerOnly,
          {"from_currency_uuid", "to_currency_uuid", "num", "currency_pair_uuid", "is_reverse"}},
         // content_sha256 — hex-строка на границе протокола (см. TableSpec::
         // hex_columns и blob.hpp/README, "Иконки"); само содержимое сюда не
@@ -133,6 +138,30 @@ bool is_iso_date(const std::string& s) {
     return day <= max_day;
 }
 
+// Построчные проверки, которые нужны ДО SQL, чтобы 400 invalid_row называл
+// поле, а не ограничение базы (23514 тоже даёт 400, но с именем CHECK).
+// Сейчас — только шаг маршрута пересчёта: num целое 1…3, булев is_reverse,
+// from и to различны. Остальные колонки проверяет сама база (FK → 409
+// missing_reference).
+void validate_row(const TableSpec& spec, const json& row) {
+    if (spec.name != "currency_conversion") return;
+
+    auto num = row.find("num");
+    if (num == row.end() || !num->is_number_integer() || num->get<long long>() < 1 || num->get<long long>() > 3) {
+        throw InvalidRow{"num: ожидается целое число от 1 до 3"};
+    }
+    auto is_reverse = row.find("is_reverse");
+    if (is_reverse == row.end() || !is_reverse->is_boolean()) {
+        throw InvalidRow{"is_reverse: ожидается boolean"};
+    }
+    auto from = row.find("from_currency_uuid");
+    auto to = row.find("to_currency_uuid");
+    if (from != row.end() && to != row.end() && from->is_string() && to->is_string() &&
+        from->get<std::string>() == to->get<std::string>()) {
+        throw InvalidRow{"from_currency_uuid и to_currency_uuid не должны совпадать"};
+    }
+}
+
 } // namespace
 
 OptionalKind optional_kind(const TableSpec& spec, const std::string& col) {
@@ -156,6 +185,7 @@ UpsertSql build_upsert(const TableSpec& spec, const std::string& ledger_id, cons
                        int64_t seq, const json& row) {
     std::string row_uuid = row.at("uuid").get<std::string>();
     bool deleted = row.value("deleted", false);
+    validate_row(spec, row);
 
     std::vector<std::string> params = {ledger_id, row_uuid, std::to_string(seq), device_id,
                                         deleted ? "t" : "f"};

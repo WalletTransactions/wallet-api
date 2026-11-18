@@ -38,6 +38,10 @@ std::string required_scope(const std::string& method, const std::string& path) {
     if (path == "/api/admin/icons" || starts_with(path, "/api/admin/icons/")) return "wallet:write";
     if (starts_with(path, "/api/ledger/") || starts_with(path, "/api/invites/") ||
         starts_with(path, "/api/currency-pairs") ||
+        // Маршруты пересчёта валют (change currency-conversion-routes): без этой
+        // строки путь остался бы вне проверки scope — токен только на чтение
+        // мог бы заводить и удалять маршруты.
+        starts_with(path, "/api/currency-routes") ||
         // Не покрывается префиксом выше: строки расходятся после «currenc».
         path == "/api/currencies" || starts_with(path, "/api/currencies/")) {
         return read ? "wallet:read" : "wallet:write";

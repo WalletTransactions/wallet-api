@@ -39,6 +39,18 @@ tags:
       удалять можно тоже только свои — общие видны, но read-only для этого
       API. `ledger_id` нигде не принимается от клиента (тот же принцип, что
       у `/sync/*`/`/api/ledger/*`).
+  - name: currency-routes
+    description: |
+      Маршруты пересчёта валют цепочкой шагов (change
+      currency-conversion-routes): например `BTC → EUR → RUB` — чтобы
+      эквивалент считался и там, где прямой пары нет. Веб присылает ПУТЬ ИЗ
+      ВАЛЮТ, сервер сам подбирает для соседних валют видимые пары и
+      направления и пишет шаги (`currency_conversion` в синке) одной
+      транзакцией с одним `seq` — на телефоны они приезжают обычным
+      `GET /sync/pull`. Маршрут принадлежит леджеру (общих нет), двунаправленный,
+      один на неупорядоченную пару валют; прямой курс приоритетнее маршрута,
+      маршрут приоритетнее кросса через USD (по умолчанию). `ledger_id` нигде
+      не принимается от клиента.
   - name: currencies
     description: |
       Свои валюты леджера с веба (change currency-ui-tweaks): создание,
@@ -176,6 +188,17 @@ paths:
         `409 counterparty_in_use`; проверка в конце транзакции, поэтому «снять
         долг (или удалить кошелёк) и удалить контрагента» одним батчем
         проходит.
+
+        Маршруты пересчёта валют (change currency-conversion-routes):
+        `currency_conversion` — ШАГ маршрута `from → to` леджера (`num` 1…3,
+        пара и `is_reverse`); таблица только леджера, общих маршрутов нет.
+        Построчно проверяется: `num` целое 1…3, `from_currency_uuid` ≠
+        `to_currency_uuid`, булев `is_reverse` — иначе `400 invalid_row`;
+        отсутствующие валюта или пара — `409 missing_reference`; второй живой
+        шаг с теми же `from`/`to`/`num` (в любом порядке `from`/`to`) —
+        `409 duplicate_key`. Целостность цепочки (непрерывность `num`, стыки,
+        концы) НЕ проверяется: шаги могут приходить разными батчами,
+        недостроенная цепочка просто не даёт курса.
 
         `icon` — обычная таблица в `changes` (метаданные: name/icon_type/
         content_sha256), но само СОДЕРЖИМОЕ (байты) сюда не входит — см.
@@ -918,8 +941,10 @@ paths:
       summary: Удалить свою валютную пару
       description: |
         Мягкое удаление пары И ВСЕХ её ещё живых курсов (каскад той же
-        транзакцией/тем же `seq`, см. `currency_pairs_repo.hpp`) — только
-        своя пара, та же неотличимость 404, что и у PATCH выше.
+        транзакцией/тем же `seq`, см. `currency_pairs_repo.hpp`) и всех
+        живых маршрутов пересчёта, шаги которых используют эту пару (целиком,
+        все шаги маршрута, тем же `seq`) — только своя пара, та же
+        неотличимость 404, что и у PATCH выше.
       tags: [currency-pairs]
       security: [{bearerAuth: [], sessionCookie: []}]
       parameters:
@@ -1067,6 +1092,123 @@ paths:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "204":
           description: Курс удалён
+
+  /api/currency-routes:
+    get:
+      operationId: listCurrencyRoutes
+      summary: Маршруты пересчёта валют леджера
+      description: |
+        Живые СТРУКТУРНО валидные маршруты: цепочка без разрывов, пары и валюты
+        шагов живы. Недостроенные и оборванные в список не попадают. Порядок —
+        по ISO-кодам `from`/`to`. У пользователя ещё нет леджера — `200` с
+        пустым списком, не `404`; леджер не создаётся.
+      tags: [currency-routes]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Список маршрутов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items: {$ref: "#/components/schemas/CurrencyRouteSummary"}
+                required: [routes]
+    post:
+      operationId: createCurrencyRoute
+      summary: Создать маршрут по пути из валют
+      description: |
+        `currency_uuids` — путь из 3–4 попарно различных валют, видимых
+        леджеру (`from` — первая, `to` — последняя). Для каждой соседней пары
+        валют сервер сам подбирает видимую живую валютную пару: с базовой
+        валютой «слева» (шаг прямой), иначе обратную (`is_reverse` = true);
+        своя пара предпочтительнее общей. Все шаги пишутся одной транзакцией с
+        одним новым `seq` потока леджера и приезжают на устройства обычным
+        `GET /sync/pull`. Заводит леджер при первом обращении. Живой маршрут
+        между теми же валютами в любом порядке — `409`; оборванный (шаги без
+        пары) такой маршрут замещается.
+      tags: [currency-routes]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currency_uuids:
+                  type: array
+                  minItems: 3
+                  maxItems: 4
+                  items: {type: string, format: uuid}
+              required: [currency_uuids]
+      responses:
+        "400":
+          description: |
+            Невалидный JSON или uuid, путь короче 3 или длиннее 4 валют,
+            повтор валюты, валюта не найдена (несуществующая и чужая —
+            намеренно неотличимо), либо для соседних валют нет пары (в
+            сообщении названа пара шага, например `EUR→RUB`). Ничего не создано.
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токену не хватает scope `wallet:write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: У леджера уже есть живой маршрут между этими валютами
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "201":
+          description: Маршрут создан
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/CurrencyRouteSummary"}}
+
+  /api/currency-routes/{from}/{to}:
+    delete:
+      operationId: deleteCurrencyRoute
+      summary: Удалить маршрут
+      description: |
+        Мягко удаляет ВСЕ шаги своего маршрута одной группой (один `seq`).
+        Пары и курсы шагов не меняются. `from`/`to` — как в списке
+        маршрутов. Чужой, несуществующий маршрут и отсутствие леджера дают
+        одинаковый `404`.
+      tags: [currency-routes]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: from
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: to
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токену не хватает scope `wallet:write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Маршрута нет (или он чужой, или у вас нет леджера)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Маршрут удалён
 
   /api/currencies:
     post:
@@ -1647,12 +1789,19 @@ components:
       allOf:
         - $ref: "#/components/schemas/SyncPushRowBase"
         - type: object
+          description: |
+            Шаг маршрута пересчёта валют `from → to`: маршрут — цепочка строк
+            с `num` = 1…3, каждая называет пару и направление шага. Строка
+            всегда принадлежит леджеру вызывающего (общих маршрутов нет).
+            Начало и конец шага выводятся из пары и `is_reverse`; цепочка
+            валидна, только если `num` идут подряд с 1, шаги стыкуются, а
+            концы совпадают с `from`/`to` — при push это не проверяется.
           properties:
-            from_currency_uuid: {type: string, format: uuid}
-            to_currency_uuid: {type: string, format: uuid}
-            num: {type: integer, minimum: 0}
-            currency_pair_uuid: {type: string, format: uuid}
-            is_reverse: {type: boolean}
+            from_currency_uuid: {type: string, format: uuid, description: "Начало ВСЕГО маршрута (одинаково у всех его шагов)"}
+            to_currency_uuid: {type: string, format: uuid, description: "Конец ВСЕГО маршрута (одинаково у всех его шагов); не равен from"}
+            num: {type: integer, minimum: 1, maximum: 3, description: "Номер шага"}
+            currency_pair_uuid: {type: string, format: uuid, description: "Пара, курс которой используется на этом шаге"}
+            is_reverse: {type: boolean, description: "false — от базовой валюты пары к котируемой (курс rate), true — наоборот (1/rate)"}
           required: [from_currency_uuid, to_currency_uuid, num, currency_pair_uuid, is_reverse]
 
     IconPushRow:
@@ -1815,10 +1964,11 @@ components:
       allOf:
         - $ref: "#/components/schemas/SyncPullRowBase"
         - type: object
+          description: Шаг маршрута пересчёта — те же поля, что в CurrencyConversionPushRow, симметрично. Приходит только в потоке леджера (`ledger.changes.currency_conversion`).
           properties:
             from_currency_uuid: {type: string, format: uuid}
             to_currency_uuid: {type: string, format: uuid}
-            num: {type: integer}
+            num: {type: integer, minimum: 1, maximum: 3}
             currency_pair_uuid: {type: string, format: uuid}
             is_reverse: {type: boolean}
           required: [from_currency_uuid, to_currency_uuid, num, currency_pair_uuid, is_reverse]
@@ -1847,6 +1997,37 @@ components:
         name: {type: string}
         icon_sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
       required: [uuid, iso_code, name, icon_sha256]
+
+    CurrencyRouteCurrency:
+      type: object
+      properties:
+        uuid: {type: string, format: uuid}
+        iso_code: {type: string}
+      required: [uuid, iso_code]
+
+    CurrencyRouteStep:
+      type: object
+      properties:
+        num: {type: integer, minimum: 1, maximum: 3}
+        currency_pair_uuid: {type: string, format: uuid}
+        symbol: {type: string, description: "Символ пары шага, например \"EURRUB\""}
+        is_reverse: {type: boolean, description: "false — шаг от базовой валюты пары к котируемой, true — наоборот"}
+      required: [num, currency_pair_uuid, symbol, is_reverse]
+
+    CurrencyRouteSummary:
+      type: object
+      properties:
+        from: {$ref: "#/components/schemas/CurrencyRouteCurrency"}
+        to: {$ref: "#/components/schemas/CurrencyRouteCurrency"}
+        path:
+          type: array
+          description: Путь из валют от `from` до `to` включительно (3–4 валюты)
+          items: {$ref: "#/components/schemas/CurrencyRouteCurrency"}
+        steps:
+          type: array
+          description: Шаги по порядку `num`
+          items: {$ref: "#/components/schemas/CurrencyRouteStep"}
+      required: [from, to, path, steps]
 
     CurrencyPairSummary:
       type: object

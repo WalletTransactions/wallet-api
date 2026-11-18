@@ -156,7 +156,7 @@ TEST(only_amount_and_rate_tables_have_numeric_columns) {
 
 TEST(ledger_data_tables_have_ledger_only_scope) {
     for (const char* name : {"account", "account_operating", "account_asset", "counterparty", "account_debt",
-                             "operation", "operation_link"}) {
+                             "operation", "operation_link", "currency_conversion"}) {
         const TableSpec* t = find(push_tables(), name);
         REQUIRE(t != nullptr);
         CHECK(t->scope == Scope::LedgerOnly);
@@ -226,7 +226,7 @@ TEST(apply_order_covers_push_tables_and_puts_parents_first) {
 
 TEST(reference_tables_have_reference_or_ledger_scope) {
     for (const char* name :
-         {"currency", "currency_pair", "currency_pair_rate", "currency_conversion", "icon"}) {
+         {"currency", "currency_pair", "currency_pair_rate", "icon"}) {
         const TableSpec* t = find(pull_tables(), name);
         REQUIRE(t != nullptr);
         CHECK(t->scope == Scope::ReferenceOrLedger);
@@ -520,6 +520,86 @@ std::string invalid_row_detail(const TableSpec& spec, const nlohmann::json& row)
 }
 
 } // namespace
+
+namespace {
+
+nlohmann::json route_step_row() {
+    return nlohmann::json{{"uuid", "55555555-5555-5555-5555-555555555555"},
+                          {"from_currency_uuid", "66666666-6666-6666-6666-666666666666"},
+                          {"to_currency_uuid", "77777777-7777-7777-7777-777777777777"},
+                          {"num", 2},
+                          {"currency_pair_uuid", "88888888-8888-8888-8888-888888888888"},
+                          {"is_reverse", true}};
+}
+
+} // namespace
+
+TEST(currency_conversion_is_ledger_only_route_step) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    CHECK(t->scope == Scope::LedgerOnly);
+    CHECK_EQ(t->columns.size(), static_cast<size_t>(5));
+    CHECK(t->conflict_columns.empty());
+}
+
+TEST(build_upsert_route_step_valid_rows_pass_for_every_num) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    for (int num : {1, 2, 3}) {
+        auto row = route_step_row();
+        row["num"] = num;
+        CHECK_EQ(invalid_row_detail(*t, row), std::string(""));
+    }
+    // Мягкое удаление шага несёт те же колонки и тоже проходит.
+    auto deleted = route_step_row();
+    deleted["deleted"] = true;
+    CHECK_EQ(invalid_row_detail(*t, deleted), std::string(""));
+}
+
+TEST(build_upsert_route_step_rejects_num_outside_1_to_3_naming_field) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    for (int num : {0, 4, -1}) {
+        auto row = route_step_row();
+        row["num"] = num;
+        std::string detail = invalid_row_detail(*t, row);
+        CHECK(detail.find("num") != std::string::npos);
+    }
+    // Не целое число — тоже не шаг.
+    auto row = route_step_row();
+    row["num"] = "2";
+    CHECK(invalid_row_detail(*t, row).find("num") != std::string::npos);
+    row["num"] = 1.5;
+    CHECK(invalid_row_detail(*t, row).find("num") != std::string::npos);
+}
+
+TEST(build_upsert_route_step_rejects_same_from_and_to_currency) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    auto row = route_step_row();
+    row["to_currency_uuid"] = row["from_currency_uuid"];
+    std::string detail = invalid_row_detail(*t, row);
+    CHECK(detail.find("from_currency_uuid") != std::string::npos);
+    CHECK(detail.find("to_currency_uuid") != std::string::npos);
+}
+
+TEST(build_upsert_route_step_requires_boolean_is_reverse) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    auto row = route_step_row();
+    row["is_reverse"] = 1;
+    CHECK(invalid_row_detail(*t, row).find("is_reverse") != std::string::npos);
+    row["is_reverse"] = "true";
+    CHECK(invalid_row_detail(*t, row).find("is_reverse") != std::string::npos);
+}
+
+TEST(build_upsert_route_step_upserts_by_ledger_and_uuid) {
+    const TableSpec* t = find(push_tables(), "currency_conversion");
+    REQUIRE(t != nullptr);
+    auto q = sync_repo::build_upsert(*t, "ledger", "device", 7, route_step_row());
+    CHECK(q.insert_sql.find("ON CONFLICT (ledger_id, uuid)") != std::string::npos);
+    CHECK(q.update_set.find("WHERE currency_conversion.ledger_id") == std::string::npos);
+}
 
 TEST(build_upsert_debt_without_due_date_omits_column) {
     const TableSpec* debt = find(push_tables(), "account_debt");

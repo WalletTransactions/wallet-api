@@ -71,6 +71,9 @@ add_executable(wallet_api_integration_tests
     test_partitioning.cpp
     test_category_kind.cpp
     test_operations_search.cpp
+    test_currency_routes.cpp
+    test_currency_routes_sync.cpp
+    test_currency_routes_api.cpp
     test_db_reconnect.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
@@ -88,6 +91,8 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/sync.cpp
     ${CMAKE_SOURCE_DIR}/src/invites_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_pairs_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/currency_routes_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/currency_routes.cpp
     ${CMAKE_SOURCE_DIR}/src/account_deletion_repo.cpp
     ${WALLET_COMMON_DIR}/util/uuid.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp

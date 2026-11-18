@@ -90,13 +90,7 @@ AS $$
            ) opf ON opf.acc_fr_uuid = vao.uuid
       LEFT JOIN LATERAL (
             SELECT rr.rate
-              FROM v_currency_conversion_rate rr
-             WHERE rr.from_currency_uuid = c.uuid
-               AND rr.to_currency_uuid   = p_eq_currency
-               AND rr."date"            <= p_date::date
-               AND (rr.ledger_id IS NULL OR rr.ledger_id = p_ledger_id)
-             ORDER BY rr."date" DESC, (rr.ledger_id IS NULL)
-             LIMIT 1
+              FROM rate_on(p_ledger_id, c.uuid, p_eq_currency, p_date::date) rr
            ) r ON true
      WHERE vao.ledger_id = p_ledger_id
        AND (opt.acc_to_uuid IS NOT NULL OR opf.acc_fr_uuid IS NOT NULL)

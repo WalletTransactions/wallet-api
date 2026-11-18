@@ -109,6 +109,9 @@ TEST(access_required_scope_table) {
     CHECK_EQ(authz::required_scope("POST", "/api/invites/accept"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("GET", "/api/currency-pairs"), std::string("wallet:read"));
     CHECK_EQ(authz::required_scope("DELETE", "/api/currency-pairs/x/rates/2026-01-01"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("GET", "/api/currency-routes"), std::string("wallet:read"));
+    CHECK_EQ(authz::required_scope("POST", "/api/currency-routes"), std::string("wallet:write"));
+    CHECK_EQ(authz::required_scope("DELETE", "/api/currency-routes/x/y"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("POST", "/api/currencies"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("PATCH", "/api/currencies/x"), std::string("wallet:write"));
     CHECK_EQ(authz::required_scope("DELETE", "/api/currencies/x"), std::string("wallet:write"));
