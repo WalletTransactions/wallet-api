@@ -70,6 +70,7 @@ add_executable(wallet_api_integration_tests
     test_default_currencies.cpp
     test_partitioning.cpp
     test_category_kind.cpp
+    test_operations_search.cpp
     test_db_reconnect.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp

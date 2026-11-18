@@ -40,7 +40,8 @@ CREATE FUNCTION f_operations_total(
     p_kind                   text   DEFAULT NULL,
     p_q                      text   DEFAULT NULL,
     p_exclude_category_uuids uuid[] DEFAULT NULL,
-    p_qs                     text[] DEFAULT NULL
+    p_qs                     text[] DEFAULT NULL,
+    p_exclude_qs             text[] DEFAULT NULL
 ) RETURNS TABLE (
     total_eq   numeric,
     incomplete boolean,
@@ -100,6 +101,10 @@ AS $$
            AND (p_qs IS NULL
                 OR EXISTS (SELECT 1 FROM unnest(p_qs) AS v(q)
                             WHERE strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(v.q, 'Ёё', 'Ее'))) > 0))
+           AND (p_exclude_qs IS NULL
+                OR o.comment IS NULL
+                OR NOT EXISTS (SELECT 1 FROM unnest(p_exclude_qs) AS v(q)
+                                WHERE strpos(lower(translate(o.comment, 'Ёё', 'Ее')), lower(translate(v.q, 'Ёё', 'Ее'))) > 0))
     )
     SELECT COALESCE(sum(CASE WHEN p_kind IS NOT NULL THEN m.amount_eq
                              WHEN m.kind = 'income'  THEN m.amount_eq
@@ -110,5 +115,5 @@ AS $$
       FROM m;
 $$;
 
-COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[]) IS
-    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы, долги и переоценка 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграции 000027, 000030, 000032, 000033, 000036.';
+COMMENT ON FUNCTION f_operations_total(uuid, timestamp, timestamp, uuid, uuid[], uuid[], text, text, uuid[], text[], text[]) IS
+    'Итог ленты по тем же фильтрам за весь период: total_eq (с p_kind — сумма, без — сальдо income − expense, переводы, долги и переоценка 0), incomplete (есть операции без курса, в сумму не вошли), matched. Ровно одна строка. Миграции 000027, 000030, 000032, 000033, 000036, 000042.';

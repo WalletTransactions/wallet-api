@@ -90,6 +90,7 @@
 \ir function/f_expense_by_weekday_for_period.sql
 \ir function/f_operations_for_period.sql
 \ir function/f_operations_total.sql
+\ir function/f_operations_by_category.sql
 \ir function/f_wallet_turnover_for_period.sql
 \ir function/f_balance_to_dates.sql
 \ir function/f_balance_series.sql

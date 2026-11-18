@@ -57,6 +57,21 @@
 | `category_kind_column_defaults_to_2_in_database` | вставка в `account` без колонки даёт `category_kind` = 2 |
 | `category_kind_migration_marks_categories_by_live_operations` | файлы 000041 (down → up) в откатываемой транзакции: только доход → 1, только расход → 0, обе стороны / без операций / удалённые операции / системная категория / кошелёк → 2; изменённые строки получают один новый `seq`, `updated_by` NULL, строки с итогом 2 `seq` не меняют |
 
+`test_operations_search.cpp` (change `operations-search-summary-sql`, миграция
+000042) — поиск операций для wallet-mcp: `p_exclude_qs` и
+`f_operations_by_category`:
+
+| Тест | Что проверяет |
+|---|---|
+| `exclude_qs_removes_false_positive_from_feed_and_total` | `p_qs => {стриж}` + `p_exclude_qs => {машинк}`: «Машинка для стрижки волос» нет ни в ленте, ни в `total_eq`/`matched` |
+| `exclude_qs_is_case_and_yo_insensitive` | вариант в верхнем регистре исключает так же |
+| `exclude_qs_keeps_operation_with_null_comment` | операция с `NULL`-комментарием не исключается |
+| `exclude_qs_absent_keeps_previous_result` | без параметра результат прежний |
+| `operations_by_category_groups_and_matches_total` | строка на категорию, суммы, `first_date`/`last_date`; сумма по строкам равна `f_operations_total` |
+| `operations_by_category_other_matches_via_exclude_category` | с `p_exclude_category_uuids` — совпадения вне категории (основа `other_matches`) |
+| `operations_by_category_empty_when_nothing_matches` | ничего не найдено — ноль строк |
+| `operations_by_category_does_not_see_foreign_ledger` | чужой леджер — ноль строк |
+
 `test_db_reconnect.cpp` (2026-11-13, общий код `util/pg_recover` из
 wallet-common) — переподключение `db::Database` после обрыва: backend
 убивается из второго соединения через `pg_terminate_backend`.
