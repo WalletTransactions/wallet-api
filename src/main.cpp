@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "net/tls.hpp"
 #include "access.hpp"
 #include "account_deletion.hpp"
 #include "app_state.hpp"
@@ -235,7 +236,22 @@ int main() {
     std::string host = env_or("HOST", "127.0.0.1");
     int port = std::stoi(env_or("PORT", "8082"));
 
-    httplib::Server svr;
+    // Взаимный TLS внутри контура (change add-internal-mtls, шаг 7): INTERNAL_MTLS=true — сервер
+    // требует клиентский сертификат от CA контура; иначе обычный HTTP, как раньше. Неполные TLS_*
+    // или нечитаемые файлы — ошибка старта, а не молчаливый возврат на HTTP.
+    auto tls_settings = nettls::settings_from_env();
+    if (!tls_settings.error.empty()) {
+        applog::error(tls_settings.error);
+        return 1;
+    }
+    std::string tls_error;
+    auto svr_owner = nettls::make_server(nettls::server_config(tls_settings), &tls_error);
+    if (!svr_owner) {
+        applog::error(tls_error);
+        return 1;
+    }
+    httplib::Server& svr = *svr_owner;
+    if (tls_settings.serve) applog::info("mTLS: сервер требует клиентский сертификат (INTERNAL_MTLS=true)");
     // Трейс-контекст, затем iss/aud/scope токена (access.hpp) — до
     // хендлеров, одной точкой на все маршруты.
     svr.set_pre_routing_handler([&state](const httplib::Request& req, httplib::Response& res) {

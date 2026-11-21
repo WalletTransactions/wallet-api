@@ -876,3 +876,7 @@ build/Release/wallet_api.exe   # Windows; на Linux — build/wallet_api
 Перед первым запуском убедитесь, что google-auth уже поднят на
 `AUTH_SERVICE_URL` — wallet-api сам по себе никого не логинит, только
 проверяет уже выданные токены.
+
+## Взаимный TLS внутри контура (необязательно)
+
+Change `add-internal-mtls` (wallet-infra, шаг 7). `INTERNAL_MTLS=true` (его задаёт `compose.mtls.yaml`, весь контур) вместе с `TLS_CERT`, `TLS_KEY`, `TLS_CA` включает mTLS на сервере сервиса: клиентский сертификат от CA контура обязателен, рукопожатие без него не завершается; вызовы к другим сервисам контура идут по https с сертификатом. Без `INTERNAL_MTLS` сервер остаётся обычным HTTP, как раньше (`TLS_*` сами по себе включают только mTLS к служебному порту google-auth). Неполные `TLS_*` или нечитаемые файлы — ошибка старта. Подробнее — `wallet-infra/infra/env/README.md`, «mTLS внутри контура».
