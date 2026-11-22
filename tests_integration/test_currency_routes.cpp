@@ -493,3 +493,45 @@ TEST(consumers_wallet_equivalent_is_null_without_any_rate_source) {
     // Нет ни пары, ни маршрута, ни USD: эквивалента нет (а не сумма по курсу 1:1).
     CHECK_EQ(balance_eq(l, wallet, rub), std::string("NULL"));
 }
+
+// ---- rate_on: прямой курс по индексу (миграция 000044) ----
+// Семантика «последний курс не позже даты» при длинной истории курсов: раньше функция строила все курсы пары
+// до даты и сортировала, теперь берёт один по индексу (LATERAL … LIMIT 1) — результат обязан совпасть.
+
+TEST(rate_on_direct_takes_latest_rate_not_after_date_among_many) {
+    auto l = make_ledger();
+    std::string eur = add_currency(l, "EUR"), usd = add_currency(l, "USD");
+    std::string pair = add_pair(l, eur, usd);
+    // Ежедневные курсы за 120 дней: 1.00, 1.01, 1.02, … (рост на 0.01 в день), начиная с 2026-01-01.
+    l.db->exec("INSERT INTO currency_pair_rate (uuid, ledger_id, seq, currency_pair_uuid, \"date\", rate) "
+               "SELECT gen_random_uuid(), $1, 100000 + g, $2, DATE '2026-01-01' + g, 1 + g * 0.01 "
+               "FROM generate_series(0, 119) g",
+               {l.identity.ledger_id, pair});
+    // Дата между курсами — берётся последний не позже даты (день 41 → 1.41), а не ближайший и не первый.
+    CHECK(near(rate_on(l, eur, usd, "2026-02-11"), 1.41));
+    CHECK(near(rate_on(l, eur, usd, "2026-01-01"), 1.0));    // ровно на дату первого курса
+    CHECK(near(rate_on(l, eur, usd, "2026-04-30"), 2.19));   // день 119 — последний курс (1 + 119 * 0.01)
+    CHECK(near(rate_on(l, eur, usd, "2030-01-01"), 2.19));   // далеко после истории — всё равно последний
+    // До первого курса прямого курса нет (и маршрута/USD тоже): пусто, а не 1:1.
+    CHECK(!rate_on(l, eur, usd, "2025-12-31").has_value());
+    // Обратное направление — 1/курс на ту же дату.
+    CHECK(near(rate_on(l, usd, eur, "2026-02-11"), 1.0 / 1.41));
+    // Пара и обратная пара не путаются: «возрастающий» курс не отдаётся за курс другой валюты.
+    std::string rub = add_currency(l, "RUB");
+    CHECK(!rate_on(l, eur, rub, "2026-02-11").has_value());
+}
+
+TEST(rate_on_identity_rate_for_same_currency_and_deleted_rate_is_ignored) {
+    auto l = make_ledger();
+    std::string eur = add_currency(l, "EUR"), usd = add_currency(l, "USD");
+    // Валюта на саму себя — «тождественный» курс 1 (как раньше во второй ветке v_currency_conversion_rate).
+    CHECK(near(rate_on(l, eur, eur, "2026-03-01"), 1.0));
+    std::string pair = add_pair(l, eur, usd);
+    add_rate(l, pair, "2026-03-01", "1.10");
+    add_rate(l, pair, "2026-03-10", "1.20");
+    // Удалённый курс не участвует: на 03-15 действует 1.10, а не удалённый 1.20.
+    l.db->exec("UPDATE currency_pair_rate SET deleted_at = now() "
+               "WHERE currency_pair_uuid = $1 AND \"date\" = DATE '2026-03-10'",
+               {pair});
+    CHECK(near(rate_on(l, eur, usd, "2026-03-15"), 1.10));
+}
