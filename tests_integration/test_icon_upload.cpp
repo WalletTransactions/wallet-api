@@ -2,14 +2,17 @@
 // против живого Postgres: POST /sync/blobs (blob.cpp), POST /sync/push и
 // GET /sync/pull (sync.cpp) с настоящим JWT — флаг и роль проверяются именно
 // там, а не в sync_repo. Флаг переключается прямо в AppState между запросами.
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "app_state.hpp"
 #include "blob.hpp"
 #include "fixture.hpp"
 #include "httplib.h"
+#include "invites_repo.hpp"
 #include "nlohmann/json.hpp"
 #include "sync.hpp"
 #include "test_framework.hpp"
@@ -77,14 +80,18 @@ struct Harness {
     }
 
     // Свой пользователь и устройство на каждый вызов (база не чистится).
-    httplib::Headers token(const std::string& role) {
-        json claims = {{"sub", uuidgen::v4()},
+    httplib::Headers token(const std::string& role) { return token_for(uuidgen::v4(), uuidgen::v4(), role); }
+
+    // Заданные пользователь и устройство: второе устройство того же пользователя или
+    // участник чужого леджера после приглашения.
+    httplib::Headers token_for(const std::string& sub, const std::string& device_id, const std::string& role = "user") {
+        json claims = {{"sub", sub},
                        {"email", "it-icon-upload@example.com"},
                        {"iss", "google-auth"},
                        {"aud", json::array({"wallet-api"})},
                        {"scope", "wallet:read wallet:write"},
                        {"role", role},
-                       {"device_id", uuidgen::v4()},
+                       {"device_id", device_id},
                        {"platform", "android"},
                        {"exp", epoch_now() + 900}};
         return httplib::Headers{{"Authorization", "Bearer " + make_test_jwt(key, kKid, claims)}};
@@ -262,4 +269,222 @@ TEST(icon_upload_pull_reports_capability_including_at_head) {
     json at_head = h.pull(auth, head);
     CHECK_EQ(at_head.at("capabilities").at("icon_upload").get<bool>(), true);
     CHECK(at_head.at("ledger").at("changes").empty());
+}
+
+// --- Гонки и совпадения (своя иконка = иконка другого устройства/пользователя) -----
+
+namespace {
+
+int64_t icons_named(db::Database& db, const std::string& ledger_id, const std::string& name) {
+    return std::stoll(db.exec("SELECT count(*) FROM icon WHERE ledger_id = $1 AND name = $2 AND deleted_at IS NULL",
+                              {ledger_id, name})
+                          .rows.at(0)
+                          .fields.at(0));
+}
+
+std::string ledger_of(Harness& h, const httplib::Headers& auth) {
+    return h.pull(auth).at("ledger").at("ledger_id").get<std::string>();
+}
+
+std::string sha_of(const std::string& body) {
+    auto digest = crypto::sha256(body);
+    return hex::encode(std::string(reinterpret_cast<const char*>(digest.data()), digest.size()));
+}
+
+} // namespace
+
+TEST(icon_race_two_members_of_one_ledger_same_name_second_gets_duplicate_key) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+
+    // Владелец и участник одного леджера (приглашение), каждый со своим телефоном.
+    std::string owner_sub = uuidgen::v4(), guest_sub = uuidgen::v4();
+    auto owner = h.token_for(owner_sub, uuidgen::v4());
+    std::string ledger_id = ledger_of(h, owner);
+    auto guest = h.token_for(guest_sub, uuidgen::v4());
+    h.pull(guest); // свой пустой леджер — заменяется при принятии приглашения
+    auto invite = invites_repo::create_invite(*db, ledger_id, owner_sub, "member", 7);
+    REQUIRE(invites_repo::accept_invite(*db, guest_sub, "it-icon-upload@example.com", invite.token, true).status ==
+            invites_repo::AcceptStatus::kOk);
+    REQUIRE(ledger_of(h, guest) == ledger_id);
+
+    std::string sha = make_blob(*db);
+    std::string name = "it-race-" + uuidgen::v4().substr(0, 8);
+    std::string first = uuidgen::v4(), second = uuidgen::v4();
+    json second_row = icon_row(second, sha);
+    second_row["name"] = name;
+    json first_row = icon_row(first, sha);
+    first_row["name"] = name;
+    auto a = h.push(owner, uuidgen::v4(), {{"icon", json::array({first_row})}});
+    REQUIRE(a);
+    CHECK_EQ(a->status, 200);
+
+    auto b = h.push(guest, uuidgen::v4(), {{"icon", json::array({second_row})}});
+    REQUIRE(b);
+    CHECK_EQ(b->status, 409);
+    CHECK_EQ(json::parse(b->body).value("error", std::string{}), std::string("duplicate_key"));
+    CHECK_EQ(icons_named(*db, ledger_id, name), int64_t{1});
+    CHECK(!live_row(*db, "icon", second));
+
+    // Участник видит иконку владельца в своём pull — дальше телефон перенимает её по имени и картинке.
+    json pulled = h.pull(guest);
+    bool seen = false;
+    if (pulled.at("ledger").at("changes").contains("icon")) {
+        for (const auto& row : pulled.at("ledger").at("changes").at("icon")) {
+            if (row.at("uuid").get<std::string>() == first) {
+                seen = true;
+                CHECK_EQ(row.at("content_sha256").get<std::string>(), sha);
+            }
+        }
+    }
+    CHECK(seen);
+}
+
+TEST(icon_two_users_different_ledgers_same_name_and_blob_both_accepted) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    std::string body = unique_body();
+    std::string name = "it-same-" + uuidgen::v4().substr(0, 8);
+
+    std::vector<std::string> ledgers;
+    for (int i = 0; i < 2; ++i) {
+        auto auth = h.token("user");
+        ledgers.push_back(ledger_of(h, auth));
+        auto up = h.client->Post("/sync/blobs", auth, body, "application/octet-stream");
+        REQUIRE(up);
+        REQUIRE(up->status == 200);
+        CHECK_EQ(json::parse(up->body).at("sha256").get<std::string>(), sha_of(body));
+        json row = icon_row(uuidgen::v4(), sha_of(body));
+        row["name"] = name;
+        auto res = h.push(auth, uuidgen::v4(), {{"icon", json::array({row})}});
+        REQUIRE(res);
+        CHECK_EQ(res->status, 200);
+    }
+    CHECK(ledgers[0] != ledgers[1]);
+    CHECK_EQ(icons_named(*db, ledgers[0], name), int64_t{1});
+    CHECK_EQ(icons_named(*db, ledgers[1], name), int64_t{1});
+    // Содержимое одно на всех: blob адресуется хешем.
+    CHECK_EQ(db->exec("SELECT count(*) FROM blob WHERE sha256 = decode($1, 'hex')", {sha_of(body)}).rows.at(0).fields.at(0),
+             std::string("1"));
+}
+
+TEST(icon_same_ledger_same_image_different_names_both_accepted) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    std::string sub = uuidgen::v4();
+    auto phone1 = h.token_for(sub, uuidgen::v4());
+    auto phone2 = h.token_for(sub, uuidgen::v4());
+    std::string ledger_id = ledger_of(h, phone1);
+    REQUIRE(ledger_of(h, phone2) == ledger_id);
+    std::string sha = make_blob(*db);
+
+    std::string u1 = uuidgen::v4(), u2 = uuidgen::v4();
+    auto r1 = h.push(phone1, uuidgen::v4(), {{"icon", json::array({icon_row(u1, sha)})}});
+    auto r2 = h.push(phone2, uuidgen::v4(), {{"icon", json::array({icon_row(u2, sha)})}});
+    REQUIRE(r1);
+    REQUIRE(r2);
+    CHECK_EQ(r1->status, 200);
+    CHECK_EQ(r2->status, 200);
+    CHECK(live_row(*db, "icon", u1));
+    CHECK(live_row(*db, "icon", u2));
+}
+
+TEST(icon_repush_same_uuid_after_lost_response_is_idempotent) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    auto auth = h.token("user");
+    std::string ledger_id = ledger_of(h, auth);
+    std::string sha = make_blob(*db);
+    std::string uuid = uuidgen::v4();
+    json row = icon_row(uuid, sha);
+
+    // Ответ на первый push «потерялся»: телефон шлёт ту же строку новым батчем.
+    auto first = h.push(auth, uuidgen::v4(), {{"icon", json::array({row})}});
+    auto again = h.push(auth, uuidgen::v4(), {{"icon", json::array({row})}});
+    REQUIRE(first);
+    REQUIRE(again);
+    CHECK_EQ(first->status, 200);
+    CHECK_EQ(again->status, 200);
+    CHECK_EQ(icons_named(*db, ledger_id, row.at("name").get<std::string>()), int64_t{1});
+}
+
+TEST(icon_ledger_icon_may_share_name_with_reference_icon) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    auto auth = h.token("user");
+    h.pull(auth);
+    std::string ref_uuid = fixture::make_reference_icon(*db);
+    std::string ref_name = db->exec("SELECT name FROM icon WHERE uuid = $1", {ref_uuid}).rows.at(0).fields.at(0);
+
+    json row = icon_row(uuidgen::v4(), make_blob(*db));
+    row["name"] = ref_name;
+    auto res = h.push(auth, uuidgen::v4(), {{"icon", json::array({row})}});
+    REQUIRE(res);
+    CHECK_EQ(res->status, 200);
+}
+
+TEST(icon_concurrent_blob_uploads_of_same_content_store_one_row) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    std::string body = unique_body();
+    constexpr int kClients = 4;
+    std::vector<httplib::Headers> auths;
+    for (int i = 0; i < kClients; ++i) auths.push_back(h.token("user"));
+
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kClients; ++i) {
+        threads.emplace_back([&, i] {
+            httplib::Client c("127.0.0.1", h.api->port());
+            auto res = c.Post("/sync/blobs", auths[i], body, "application/octet-stream");
+            if (res && res->status == 200 && json::parse(res->body).at("sha256").get<std::string>() == sha_of(body)) ++ok;
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    CHECK_EQ(ok.load(), kClients);
+    CHECK_EQ(db->exec("SELECT count(*) FROM blob WHERE sha256 = decode($1, 'hex')", {sha_of(body)}).rows.at(0).fields.at(0),
+             std::string("1"));
+}
+
+TEST(icon_concurrent_push_same_name_from_two_phones_exactly_one_wins) {
+    Harness h;
+    h.state.ledger_icon_upload = true;
+    auto db = fixture::open();
+    std::string sub = uuidgen::v4();
+    std::vector<httplib::Headers> phones = {h.token_for(sub, uuidgen::v4()), h.token_for(sub, uuidgen::v4())};
+    std::string ledger_id = ledger_of(h, phones[0]);
+    REQUIRE(ledger_of(h, phones[1]) == ledger_id);
+    std::string sha = make_blob(*db);
+    std::string name = "it-concurrent-" + uuidgen::v4().substr(0, 8);
+
+    std::vector<int> statuses(2, 0);
+    std::vector<std::string> errors(2);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 2; ++i) {
+        threads.emplace_back([&, i] {
+            httplib::Client c("127.0.0.1", h.api->port());
+            json row = icon_row(uuidgen::v4(), sha);
+            row["name"] = name;
+            json body = {{"batch_id", uuidgen::v4()}, {"changes", {{"icon", json::array({row})}}}};
+            auto res = c.Post("/sync/push", phones[i], body.dump(), "application/json");
+            if (res) {
+                statuses[i] = res->status;
+                errors[i] = json::parse(res->body).value("error", std::string{});
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    int wins = (statuses[0] == 200) + (statuses[1] == 200);
+    int dup = (statuses[0] == 409 && errors[0] == "duplicate_key") + (statuses[1] == 409 && errors[1] == "duplicate_key");
+    CHECK_EQ(wins, 1);
+    CHECK_EQ(dup, 1);
+    CHECK_EQ(icons_named(*db, ledger_id, name), int64_t{1});
 }
