@@ -4,6 +4,7 @@
 #include <optional>
 #include <regex>
 
+#include "icon_upload.hpp"
 #include "util/log.hpp"
 
 using nlohmann::json;
@@ -605,8 +606,17 @@ void reject_counterparties_in_use(db::Database::Transaction& tx, const std::stri
 
 } // namespace
 
+json success_response(int64_t seq, const std::vector<std::string>& icons_rejected) {
+    json out = {{"seq", seq}, {"conflicts", json::array()}};
+    if (!icons_rejected.empty()) {
+        out["icons_rejected"] = {{"error", icon_upload::kDisabledError}, {"uuids", icons_rejected}};
+    }
+    return out;
+}
+
 PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std::string& device_id,
-                        const std::string& batch_id, const json& changes, PushMode mode) {
+                        const std::string& batch_id, const json& changes, PushMode mode,
+                        const std::vector<std::string>& icons_rejected) {
     const bool create_only = mode == PushMode::CreateOperationsOnly;
     // Идемпотентность — отдельный, обычный (не в транзакции батча) запрос:
     // конфликты сюда никогда не попадают (см. ниже), поэтому найденная
@@ -641,8 +651,8 @@ PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std
         if (!create_only) tombstone_children_of_deleted_parents(tx, ledger_id, device_id, seq, changes);
         if (!create_only) reject_counterparties_in_use(tx, ledger_id, changes);
 
-        json response_json = {{"seq", seq}, {"conflicts", json::array()}};
-        std::string response_text = response_json.dump();
+        // icons_rejected входит в response_text — повтор batch_id отдаст тот же ответ.
+        std::string response_text = success_response(seq, icons_rejected).dump();
         // В ТОЙ ЖЕ транзакции, что и сами данные (не отдельным db.exec()
         // после tx.commit() — раньше было так, и это был самозаклин: tx
         // ещё жива на этой строке и держит mutex_ соединения до конца своей

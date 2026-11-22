@@ -25,6 +25,7 @@ add_executable(wallet_api_tests
     test_sync.cpp
     test_currencies.cpp
     test_reference_icons.cpp
+    test_icon_upload.cpp
 
     ${CMAKE_SOURCE_DIR}/src/currencies_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp

@@ -36,4 +36,10 @@ struct AppState {
     // срока в горизонт не входит.
     bool tombstone_purge = false;
     int tombstone_device_ttl_days = 90;
+
+    // Приём своих иконок леджера (change optional-icon-upload,
+    // LEDGER_ICON_UPLOAD). По умолчанию выкл: обычному пользователю 403 на
+    // POST /sync/blobs, строки `icon` в push отбрасываются (icons_rejected);
+    // админу не мешает. Клиент видит значение в pull: capabilities.icon_upload.
+    bool ledger_icon_upload = false;
 };

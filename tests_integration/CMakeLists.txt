@@ -75,6 +75,7 @@ add_executable(wallet_api_integration_tests
     test_currency_routes_sync.cpp
     test_currency_routes_api.cpp
     test_db_reconnect.cpp
+    test_icon_upload.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
@@ -89,6 +90,7 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/provisioning.cpp
     ${CMAKE_SOURCE_DIR}/src/sync_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/sync.cpp
+    ${CMAKE_SOURCE_DIR}/src/blob.cpp
     ${CMAKE_SOURCE_DIR}/src/invites_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_pairs_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_routes_repo.cpp

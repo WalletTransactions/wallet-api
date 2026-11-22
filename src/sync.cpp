@@ -2,7 +2,9 @@
 
 #include <cctype>
 #include <optional>
+#include <vector>
 
+#include "icon_upload.hpp"
 #include "nlohmann/json.hpp"
 #include "provisioning.hpp"
 #include "session.hpp"
@@ -32,6 +34,9 @@ struct Context {
     // Токен с expense:write без wallet:write — Telegram-бот
     // (TODO_telegram_tokens.md, «Скоупы»): push только новых операций.
     bool expense_only = false;
+    // Глобальная роль из токена ("user"/"support"/"admin"), не роль в леджере —
+    // для флага приёма своих иконок (change optional-icon-upload).
+    std::string global_role;
 };
 
 std::optional<Context> authenticate_and_provision(AppState& state, const httplib::Request& req,
@@ -65,7 +70,7 @@ std::optional<Context> authenticate_and_provision(AppState& state, const httplib
     auto identity = provisioning::ensure_identity(*state.db_pool->acquire(), user->user_id, user->email,
                                                    user->device_id, device_name, user->platform);
     bool expense_only = !session::has_scope(*user, "wallet:write") && session::has_scope(*user, "expense:write");
-    return Context{identity.ledger_id, user->device_id, identity.role, expense_only};
+    return Context{identity.ledger_id, user->device_id, identity.role, expense_only, user->role};
 }
 
 void handle_push(AppState& state, const httplib::Request& req, httplib::Response& res) {
@@ -104,8 +109,17 @@ void handle_push(AppState& state, const httplib::Request& req, httplib::Response
         mode = sync_repo::PushMode::CreateOperationsOnly;
     }
 
-    auto outcome =
-        sync_repo::push_batch(*state.db_pool->acquire(), ctx->ledger_id, ctx->device_id, batch_id, changes, mode);
+    // Флаг приёма своих иконок выключен (change optional-icon-upload): строки
+    // `icon` отбрасываются до применения, остальной батч живёт — выключенный
+    // флаг не должен блокировать синк денег. Ссылка на отброшенную иконку из
+    // счёта/валюты даст штатный 409 missing_reference.
+    std::vector<std::string> icons_rejected;
+    if (!icon_upload::allowed(state.ledger_icon_upload, ctx->global_role)) {
+        icons_rejected = icon_upload::take_icon_rows(changes);
+    }
+
+    auto outcome = sync_repo::push_batch(*state.db_pool->acquire(), ctx->ledger_id, ctx->device_id, batch_id,
+                                         changes, mode, icons_rejected);
     res.status = outcome.http_status;
     res.set_content(outcome.response_body, kJsonContentType);
 }
@@ -200,7 +214,12 @@ void handle_pull(AppState& state, const httplib::Request& req, httplib::Response
     // дожидаясь, пока старый курсор окажется дальше головы (reset).
     json ledger_out = stream_json(ledger_result);
     ledger_out["ledger_id"] = ctx->ledger_id;
-    json out = {{"ledger", ledger_out}, {"reference", stream_json(reference_result)}};
+    // capabilities — в каждом ответе, не зависит от леджера, курсоров и роли:
+    // клиент узнаёт о флаге приёма своих иконок до отправки (change
+    // optional-icon-upload).
+    json out = {{"ledger", ledger_out},
+                {"reference", stream_json(reference_result)},
+                {"capabilities", {{"icon_upload", state.ledger_icon_upload}}}};
     res.set_content(out.dump(), kJsonContentType);
 
     if (state.tombstone_purge) {
