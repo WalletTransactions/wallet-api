@@ -27,5 +27,5 @@
 ## 5. Документация и инфраструктура
 
 - [x] 5.1 `openapi.yaml`: `403 icon_upload_disabled` у `uploadBlob`, `icons_rejected` в ответе push, `capabilities` в ответе pull
-- [ ] 5.2 wallet-infra: `LEDGER_ICON_UPLOAD` в `test.env`/`prod.env` (off), PR + rc-тег; включение на test отдельным шагом
+- [x] 5.2 wallet-infra: `LEDGER_ICON_UPLOAD` в `test.env`/`prod.env` (off), PR + rc-тег; включение на test отдельным шагом _wallet-infra#96, v0.5.2-rc.2 на test: `LEDGER_ICON_UPLOAD=on` (проверка Android 4.2 на Huawei 2026-11-22), prod — off._
 - [x] 5.3 Сверить `org/docs/TODO_mobile_sync.md` и при необходимости дописать про опциональные иконки
