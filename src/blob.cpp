@@ -1,5 +1,6 @@
 #include "blob.hpp"
 
+#include "icon_upload.hpp"
 #include "nlohmann/json.hpp"
 #include "session.hpp"
 #include "util/crypto.hpp"
@@ -33,6 +34,13 @@ void handle_upload(AppState& state, const httplib::Request& req, httplib::Respon
     auto user = session::current_user(req, *state.jwks);
     if (!user) {
         json_error(res, 401, "unauthenticated");
+        return;
+    }
+    // Флаг приёма своих иконок (change optional-icon-upload): после
+    // аутентификации (без токена — 401, а не 403) и до проверки размера —
+    // тело не читается и не сохраняется.
+    if (!icon_upload::allowed(state.ledger_icon_upload, user->role)) {
+        json_error(res, 403, icon_upload::kDisabledError);
         return;
     }
 

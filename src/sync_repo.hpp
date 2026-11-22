@@ -218,9 +218,17 @@ struct PushOutcome {
 // результатом, как и в полном режиме.
 enum class PushMode { Full, CreateOperationsOnly };
 
+// icons_rejected (change optional-icon-upload) — uuid строк `icon`, которые
+// HTTP-слой уже убрал из changes при выключенном флаге приёма своих иконок;
+// непустой список попадает в ответ 200 (и в sync_push_batch для повтора).
 PushOutcome push_batch(db::Database& db, const std::string& ledger_id, const std::string& device_id,
                         const std::string& batch_id, const nlohmann::json& changes,
-                        PushMode mode = PushMode::Full);
+                        PushMode mode = PushMode::Full,
+                        const std::vector<std::string>& icons_rejected = {});
+
+// Тело успешного ответа push: {seq, conflicts: []} и, только если строки
+// `icon` были отброшены, icons_rejected: {error: icon_upload_disabled, uuids}.
+nlohmann::json success_response(int64_t seq, const std::vector<std::string>& icons_rejected);
 
 // Состав батча для PushMode::CreateOperationsOnly — чистая функция ради
 // юнит-тестов. Пустая строка — годится; иначе код ошибки для тела 403:

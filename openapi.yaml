@@ -206,6 +206,15 @@ paths:
         ссылающаяся на неизвестный сервису `icon_uuid`/`content_sha256`,
         получит `409 missing_reference`.
 
+        Свои иконки и флаг приёма (change optional-icon-upload,
+        `LEDGER_ICON_UPLOAD`): при выключенном флаге строки `icon` от
+        пользователя без роли администратора отбрасываются до применения, а
+        остальной батч применяется как обычно. Ответ `200` тогда несёт
+        `icons_rejected` с `error: icon_upload_disabled` и `uuid` отброшенных
+        строк. Счёт или валюта со ссылкой на отброшенную иконку получают
+        обычный `409 missing_reference`. Текущее значение флага — в
+        `capabilities.icon_upload` ответа `GET /sync/pull`.
+
         Нужен scope `wallet:write` — или `expense:write` (токен
         Telegram-бота, `org/docs/TODO_telegram_tokens.md`, «Скоупы»): тогда в
         `changes` только `operation`, только новые строки (uuid, которого у
@@ -274,6 +283,13 @@ paths:
                 properties:
                   seq: {type: integer, format: int64}
                   conflicts: {type: array, items: {}, maxItems: 0}
+                  icons_rejected:
+                    type: object
+                    description: "Только если строки `icon` были отброшены: флаг приёма своих иконок выключен (см. описание). Входит в сохранённый ответ — повтор batch_id отдаёт его же"
+                    properties:
+                      error: {type: string, enum: [icon_upload_disabled]}
+                      uuids: {type: array, items: {type: string, format: uuid}}
+                    required: [error, uuids]
                 required: [seq, conflicts]
         "409":
           description: |
@@ -398,7 +414,13 @@ paths:
                       reset_reason: {type: string, enum: [ahead, purged], description: "Только при reset: true. ahead — курсор дальше головы потока; purged — курсор меньше purged_seq, клиент перезагружает поток и удаляет у себя строки, не пришедшие при перезагрузке"}
                       changes: {$ref: "#/components/schemas/SyncPullChanges"}
                     required: [next_seq, reset, changes]
-                required: [ledger, reference]
+                  capabilities:
+                    type: object
+                    description: "Возможности сервера — в каждом ответе, не зависят от леджера, курсоров и роли"
+                    properties:
+                      icon_upload: {type: boolean, description: "Принимает ли сервер свои иконки пользователя (LEDGER_ICON_UPLOAD). false — POST /sync/blobs отвечает 403 icon_upload_disabled, строки icon в push отбрасываются (icons_rejected)"}
+                    required: [icon_upload]
+                required: [ledger, reference, capabilities]
 
   /sync/blobs:
     post:
@@ -418,6 +440,11 @@ paths:
         `device_id` (в отличие от `/sync/push`/`/sync/pull`): blob не
         привязан к леджеру/устройству, браузерный вход годится не хуже
         мобильного.
+
+        Флаг приёма своих иконок (`LEDGER_ICON_UPLOAD`, по умолчанию выкл):
+        при выключенном флаге пользователь без роли администратора получает
+        `403 icon_upload_disabled`, тело не сохраняется. Администратору флаг
+        не мешает — общие иконки веба грузятся этим же методом.
       tags: [blobs]
       security: [{bearerAuth: [], sessionCookie: []}]
       requestBody:
@@ -432,6 +459,10 @@ paths:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "400":
           description: "Тело запроса пустое или больше 1 МиБ (см. wallet-api/schema/table/blob.sql)"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: "`error`: `icon_upload_disabled` — приём своих иконок выключен (`capabilities.icon_upload` = false), вызывающий не администратор"
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "200":

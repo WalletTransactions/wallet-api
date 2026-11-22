@@ -55,11 +55,29 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 IT_DB_NAME=wallet_api_it
 TEST_IMAGE=wallet-api-it-tests
 
-ENV_FILE="$WORKSPACE_DIR/wallet-infra/infra/db/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "Не найден $ENV_FILE — сначала: cp infra/db/.env.example infra/db/.env" >&2
+# Пароль мигратора — того кластера, в который идём. У контуров wallet-<env> он в
+# секретах деплоя (~/.config/wallet-secrets/<env>/db.env, как у wallet-infra
+# migrate.sh); infra/db/.env — только у локального dev-стека. Раньше это не
+# всплывало: docker exec psql идёт через сокет (trust), а миграции — без TLS.
+IT_DB_PROJECT="${IT_DB_PROJECT:-wallet-test}"
+# prod — отказ до чтения его секретов.
+if [[ "$IT_DB_PROJECT" == "wallet-prod" ]]; then
+    echo "IT_DB_PROJECT=wallet-prod запрещён: интеграционные тесты — только не в prod-кластере." >&2
     exit 1
 fi
+secrets_env="${WALLET_SECRETS_ROOT:-$HOME/.config/wallet-secrets}/${IT_DB_PROJECT#wallet-}/db.env"
+if [[ -n "${IT_DB_ENV_FILE:-}" ]]; then
+    ENV_FILE="$IT_DB_ENV_FILE"
+elif [[ "$IT_DB_PROJECT" == wallet-* && -f "$secrets_env" ]]; then
+    ENV_FILE="$secrets_env"
+else
+    ENV_FILE="$WORKSPACE_DIR/wallet-infra/infra/db/.env"
+fi
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "Не найден $ENV_FILE — сначала: cp infra/db/.env.example infra/db/.env (или IT_DB_ENV_FILE=...)" >&2
+    exit 1
+fi
+echo "==> Креды мигратора: $ENV_FILE"
 set -a
 source "$ENV_FILE"
 set +a
@@ -71,11 +89,6 @@ set +a
 # На хосте два кластера — wallet-prod и wallet-test (wallet-infra/infra/env):
 # без фильтра по проекту `head -n1` мог взять prod и завести тестовую базу и
 # миграции в prod-кластере. Только test; prod — отказ.
-IT_DB_PROJECT="${IT_DB_PROJECT:-wallet-test}"
-if [[ "$IT_DB_PROJECT" == "wallet-prod" ]]; then
-    echo "IT_DB_PROJECT=wallet-prod запрещён: интеграционные тесты — только не в prod-кластере." >&2
-    exit 1
-fi
 db_container="$("$ENGINE" ps --filter "label=io.podman.compose.service=db" --filter "label=io.podman.compose.project=$IT_DB_PROJECT" --format '{{.Names}}' | head -n1)"
 if [[ -z "$db_container" ]]; then
     db_container="$("$ENGINE" ps --filter "label=com.docker.compose.service=db" --filter "label=com.docker.compose.project=$IT_DB_PROJECT" --format '{{.Names}}' | head -n1)"
@@ -101,11 +114,19 @@ if [[ "$exists" != "1" ]]; then
         "CREATE DATABASE ${IT_DB_NAME} OWNER ${MIGRATOR_POSTGRES_USER}"
 fi
 
+# TLS к базе (wallet-infra, change add-internal-mtls, 9.1): при mTLS контура pg_hba
+# отклоняет подключения без шифрования (hostnossl reject), клиентский сертификат не
+# нужен — хватает sslmode=require. Режим берём у самого кластера: ssl=off — как раньше.
+db_ssl="$("$ENGINE" exec -e PGPASSWORD="$MIGRATOR_POSTGRES_PASSWORD" "$db_container" \
+    psql -U "$MIGRATOR_POSTGRES_USER" -d postgres -tAc "SHOW ssl")"
+IT_DB_SSLMODE="${IT_DB_SSLMODE:-$([[ "$db_ssl" == "on" ]] && echo require || echo disable)}"
+echo "==> TLS к базе: ssl=$db_ssl, sslmode=$IT_DB_SSLMODE"
+
 echo "==> Миграции (идемпотентно — golang-migrate накатывает только новые)"
 "$ENGINE" run --rm --network "$db_network" \
     -v "$WORKSPACE_DIR/wallet-api/migrations:/migrations:ro" \
     docker.io/migrate/migrate -path=/migrations \
-    -database "postgres://${MIGRATOR_POSTGRES_USER}:${MIGRATOR_POSTGRES_PASSWORD}@db:5432/${IT_DB_NAME}?sslmode=disable" \
+    -database "postgres://${MIGRATOR_POSTGRES_USER}:${MIGRATOR_POSTGRES_PASSWORD}@db:5432/${IT_DB_NAME}?sslmode=${IT_DB_SSLMODE}" \
     up
 
 echo "==> Сборка тестового образа (см. Containerfile рядом)"
@@ -124,6 +145,6 @@ echo "==> Тесты"
 # рядом — root), поэтому запись в bind-mount не упирается в права.
 "$ENGINE" run --rm --network "$db_network" \
     -v "$SCRIPT_DIR:/results" \
-    -e DATABASE_URL="postgres://${MIGRATOR_POSTGRES_USER}:${MIGRATOR_POSTGRES_PASSWORD}@db:5432/${IT_DB_NAME}?sslmode=disable" \
+    -e DATABASE_URL="postgres://${MIGRATOR_POSTGRES_USER}:${MIGRATOR_POSTGRES_PASSWORD}@db:5432/${IT_DB_NAME}?sslmode=${IT_DB_SSLMODE}" \
     -e JUNIT_XML_PATH=/results/junit.xml \
     "$TEST_IMAGE"

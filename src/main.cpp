@@ -32,6 +32,7 @@
 #include "httplib.h"
 #include "invites.hpp"
 #include "nlohmann/json.hpp"
+#include "icon_upload.hpp"
 #include "reference_icons.hpp"
 #include "sync.hpp"
 #include "util/dotenv.hpp"
@@ -231,6 +232,12 @@ int main() {
                      {{"event", "sync_tombstone_config"},
                       {"purge", state.tombstone_purge},
                       {"device_ttl_days", state.tombstone_device_ttl_days}});
+
+        // Приём своих иконок леджера (change optional-icon-upload): по умолчанию
+        // выкл — выкатка новой версии сама приём не открывает.
+        state.ledger_icon_upload = icon_upload::parse_flag(env_or("LEDGER_ICON_UPLOAD", "off"));
+        applog::info(std::string("ledger icon upload: ") + (state.ledger_icon_upload ? "on" : "off"),
+                     {{"event", "ledger_icon_upload_config"}, {"enabled", state.ledger_icon_upload}});
     }
 
     std::string host = env_or("HOST", "127.0.0.1");
