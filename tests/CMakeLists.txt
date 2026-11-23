@@ -26,8 +26,10 @@ add_executable(wallet_api_tests
     test_currencies.cpp
     test_reference_icons.cpp
     test_icon_upload.cpp
+    test_user_settings.cpp
 
     ${CMAKE_SOURCE_DIR}/src/currencies_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/user_settings_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
     ${WALLET_COMMON_DIR}/util/hex.cpp

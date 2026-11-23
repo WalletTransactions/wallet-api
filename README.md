@@ -471,7 +471,8 @@ org/docs/TODO_mobile_sync.md, Фаза 6. `ledger_id` нигде не прини
 2. `DELETE FROM app_user` — каскадом снимает членство ЭТОГО пользователя в
    ЧУЖИХ леджерах (он там просто участник — это и есть "выйти из общего
    кошелька", не удаляя сам леджер и данные остальных), любые оставшиеся
-   `device` и `ledger_invite` (`created_by`/`used_by`).
+   `device` и `ledger_invite` (`created_by`/`used_by`), а также строку
+   личных настроек `user_settings` (см. "Личные настройки" ниже).
 
 **Если пользователь — владелец леджера, где есть ДРУГИЕ участники** —
 `409`, ничего не трогается: жёсткое удаление снесло бы данные, которыми
@@ -500,6 +501,44 @@ README). Два разных сервиса, общей транзакции н�
 участник — выходит из чужого леджера, не трогая его; никогда не
 провизионировался — idempotent `204`. Полный контракт — `openapi.yaml`, тег
 `account`.
+
+## Личные настройки (`GET`/`PUT /api/settings`)
+
+Настройки пользователя, а не леджера (change `user-eq-currency`), таблица
+`user_settings` (миграция `000045_user_settings`). Пока одна — валюта
+эквивалента: раньше Android держал её в настройках устройства, веб — в
+`localStorage`, а MCP брал валюту первого кошелька по алфавиту. Хранится
+ISO-код, а не uuid валюты: uuid у каждого леджера свой.
+
+```sh
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://127.0.0.1:8090/api/settings
+# {"eq_currency":null}
+curl -X PUT -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+     -d '{"eq_currency":"eur"}' http://127.0.0.1:8090/api/settings
+# {"eq_currency":"EUR"}
+```
+
+- `GET` — `{"eq_currency": "<ISO>" | null}`; `null` — не выбрана (строки нет).
+- `PUT {"eq_currency": "<код>" | null}` — код приводится к верхнему регистру и
+  должен быть среди живых валют, видимых леджеру пользователя: общий
+  справочник (`ledger_id IS NULL`) и свои валюты леджера — тот же набор, что
+  `GET /api/reports/currencies` в wallet-report. Без леджера годятся только
+  общие, леджер не создаётся. Иначе — `400 {"error":"unknown_currency"}`,
+  сохранённое значение не меняется. `null` — сброс. Ответ `200` — сохранённое
+  значение. Невалидный JSON или не тот тип — `400` с `field` = `eq_currency`.
+- Обе ручки требуют scope `account` (сессии веба и Android); у токенов бота и
+  MCP его нет — `403 insufficient_scope`. Роль в леджере значения не имеет:
+  участник с ролью `reader` тоже меняет свою настройку.
+- Если валюту потом удалили из справочника, значение остаётся — клиенты видят,
+  что её нет, и берут запасную (EUR, затем первую).
+- wallet-report читает таблицу ролью `wallet_reader` (`GRANT SELECT`) и
+  отдаёт предпочтение вебу и MCP. Удаление аккаунта уносит строку каскадом от
+  `app_user`.
+
+Логика — `src/user_settings_repo.cpp` (юнит-тест разбора тела —
+`tests/test_user_settings.cpp`, запись и видимость кода против живого
+Postgres — `tests_integration/test_user_settings.cpp`). Полный контракт —
+`openapi.yaml`, тег `settings`.
 
 ## Курсы валют (`/api/currency-pairs*`)
 

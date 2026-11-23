@@ -68,6 +68,10 @@ GRANT SELECT ON account_asset TO wallet_reader;
 GRANT SELECT ON counterparty TO wallet_reader;
 GRANT SELECT ON account_debt TO wallet_reader;
 
+-- user_settings (000045, user-eq-currency) — wallet-report отдаёт валюту
+-- эквивалента пользователя вебу и MCP (preferred_eq_currency).
+GRANT SELECT ON user_settings TO wallet_reader;
+
 -- Отчётные функции объявлены SECURITY INVOKER (по умолчанию), то есть внутри
 -- работают с правами вызывающего. Права на EXECUTE в PostgreSQL по умолчанию
 -- есть у PUBLIC, так что этот блок ничего не открывает — он фиксирует, какие

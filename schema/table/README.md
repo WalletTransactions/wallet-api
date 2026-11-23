@@ -84,6 +84,19 @@
 | `created_at` | timestamptz NOT NULL | |
 | `disabled_at` | timestamptz | Зарезервировано, пока ничего не выставляет |
 
+## `user_settings`
+
+Личные настройки пользователя (change `user-eq-currency`, миграция 000045) —
+одна строка на пользователя, не на леджер; в поток синка не входит. Нет строки
+и `NULL` в колонке значат одно и то же — «не выбрано». Пишет `PUT
+/api/settings`, читают `GET /api/settings` и wallet-report (`wallet_reader`).
+
+| Поле | Тип | Описание |
+| --- | --- | --- |
+| `user_id` | uuid PK → `app_user` ON DELETE CASCADE | Удаление аккаунта уносит строку |
+| `eq_currency_iso` | text NULL | ISO-код валюты эквивалента в верхнем регистре; при записи должен быть среди живых валют, видимых леджеру пользователя (общие + свои) |
+| `updated_at` | timestamptz NOT NULL | Момент последнего изменения, только диагностика |
+
 ## `ledger_member`
 
 Кто имеет доступ к леджеру и с какими правами. PK `(ledger_id, user_id)`.

@@ -124,6 +124,10 @@ TEST(access_required_scope_table) {
     CHECK_EQ(authz::required_scope("DELETE", "/api/admin/icons/x"), std::string("wallet:write"));
     CHECK(authz::required_scope("POST", "/api/admin/iconsx").empty());
     CHECK_EQ(authz::required_scope("DELETE", "/api/account"), std::string("account"));
+    // Личные настройки (user-eq-currency, design D4) — account при любом методе.
+    CHECK_EQ(authz::required_scope("GET", "/api/settings"), std::string("account"));
+    CHECK_EQ(authz::required_scope("PUT", "/api/settings"), std::string("account"));
+    CHECK(authz::required_scope("GET", "/api/settingsx").empty());
     CHECK(authz::required_scope("GET", "/healthz").empty());
     CHECK(authz::required_scope("GET", "/docs").empty());
 
@@ -218,6 +222,23 @@ TEST(access_gate_end_to_end) {
         CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
         CHECK_EQ(res.status, 403);
         CHECK_EQ(json::parse(res.body).value("error", std::string{}), std::string("нужен scope wallet:write"));
+    }
+    // Настройки без account (токен wallet-api только с wallet:read/wallet:write,
+    // как у бота и MCP) — 403 insufficient_scope; с account — к хендлеру.
+    {
+        json no_account = user_claims();
+        no_account["scope"] = "wallet:read wallet:write reports:read";
+        for (const char* method : {"GET", "PUT"}) {
+            httplib::Response res;
+            auto req = request(method, "/api/settings", token(no_account));
+            CHECK(authz::gate(req, res, cache) == httplib::Server::HandlerResponse::Handled);
+            CHECK_EQ(res.status, 403);
+            CHECK(res.get_header_value("WWW-Authenticate").find("insufficient_scope") != std::string::npos);
+            CHECK_EQ(json::parse(res.body).value("error", std::string{}), std::string("нужен scope account"));
+        }
+        httplib::Response ok_res;
+        auto ok_req = request("PUT", "/api/settings", token(user_claims()));
+        CHECK(authz::gate(ok_req, ok_res, cache) == httplib::Server::HandlerResponse::Unhandled);
     }
     // Админ без wallet:write на общие иконки — 403 по scope, до проверки роли
     // (spec api-access-control, server-managed-icons).

@@ -35,6 +35,7 @@
 #include "icon_upload.hpp"
 #include "reference_icons.hpp"
 #include "sync.hpp"
+#include "user_settings.hpp"
 #include "util/dotenv.hpp"
 #include "util/jwks.hpp"
 #include "util/log.hpp"
@@ -272,6 +273,7 @@ int main() {
     currency_routes_api::register_routes(svr, state); // маршруты пересчёта валют: /api/currency-routes*
     currencies_api::register_routes(svr, state); // свои валюты: /api/currencies*
     account_deletion_api::register_routes(svr, state); // "Удалить аккаунт": DELETE /api/account
+    user_settings_api::register_routes(svr, state); // личные настройки: GET/PUT /api/settings
     reference_icons_api::register_routes(svr, state); // общий набор иконок (admin): /api/admin/icons*
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
