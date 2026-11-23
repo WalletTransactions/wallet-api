@@ -9,4 +9,4 @@
 
 ## 3. Выкат
 
-- [ ] 3.1 rc на test раньше wallet-report и wallet-web. Проверка: `PUT` с токеном веб-сессии сохраняет `EUR`, в базе test строка есть
+- [x] 3.1 rc на test раньше wallet-report и wallet-web. Проверка: `PUT` с токеном веб-сессии сохраняет `EUR`, в базе test строка есть
