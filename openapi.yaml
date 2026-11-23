@@ -261,6 +261,8 @@ paths:
           description: Не аутентифицирован
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "413":
+          description: Тело запроса больше 8 МБ (предел сервиса) — тело не читается
         "403":
           description: |
             Токен без claim'а `device_id` — `error`: `device_required`
@@ -271,7 +273,9 @@ paths:
             границ, `error`: `only_operation` (в `changes` что-то кроме
             `operation`), `delete_not_allowed` (`deleted` не `false`),
             `operation_exists` (операция с таким uuid уже есть; `table`,
-            `uuid` — какая, батч откачен целиком), `reader_cannot_write`.
+            `uuid` — какая, батч откачен целиком). Участник с ролью `reader`
+            при любом scope и непустом `changes` — `reader_cannot_write`
+            (батч без строк проходит).
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "200":
@@ -912,6 +916,11 @@ paths:
             — намеренно неотличимо, см. `currency_pairs_repo.hpp`).
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
           description: Не аутентифицирован
           content:
@@ -955,6 +964,11 @@ paths:
           description: Невалидный JSON или precision вне диапазона
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
           description: Не аутентифицирован
           content:
@@ -984,6 +998,11 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
+        "403":
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
           description: Не аутентифицирован
           content:
@@ -1076,6 +1095,11 @@ paths:
           description: Невалидный JSON, date не в формате YYYY-MM-DD, либо rate не положительное число
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
           description: Не аутентифицирован
           content:
@@ -1111,6 +1135,11 @@ paths:
       responses:
         "400":
           description: date не в формате YYYY-MM-DD
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
@@ -1193,7 +1222,8 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токену не хватает scope `wallet:write`
+          description: |
+            Токену не хватает scope `wallet:write`; участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "409":
@@ -1231,7 +1261,8 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токену не хватает scope `wallet:write`
+          description: |
+            Токену не хватает scope `wallet:write`; участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "404":
@@ -1278,7 +1309,8 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токен без `wallet:write` (`insufficient_scope`)
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "409":
@@ -1331,7 +1363,8 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токен без `wallet:write` (`insufficient_scope`)
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "404":
@@ -1366,7 +1399,8 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "403":
-          description: Токен без `wallet:write` (`insufficient_scope`)
+          description: |
+            Токен без `wallet:write` (`insufficient_scope`); участник с ролью `reader` — `error`: `reader_cannot_write`
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "404":
