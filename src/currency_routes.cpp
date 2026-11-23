@@ -5,6 +5,7 @@
 #include "currency_routes_repo.hpp"
 #include "db.hpp"
 #include "invites_repo.hpp"
+#include "ledger_write_guard.hpp"
 #include "nlohmann/json.hpp"
 #include "provisioning.hpp"
 #include "session.hpp"
@@ -138,15 +139,18 @@ void handle_delete_route(AppState& state, const httplib::Request& req, httplib::
 
 } // namespace
 
+// Пишущие маршруты закрыты для читателя леджера (ledger_write_guard.hpp).
 void register_routes(httplib::Server& svr, AppState& state) {
     svr.Get("/api/currency-routes", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_list_routes(state, req, res);
     });
     svr.Post("/api/currency-routes", [&state](const httplib::Request& req, httplib::Response& res) {
+        if (ledger_write_guard::reject_reader(state, req, res)) return;
         handle_create_route(state, req, res);
     });
     svr.Delete("/api/currency-routes/:from/:to",
                [&state](const httplib::Request& req, httplib::Response& res) {
+                   if (ledger_write_guard::reject_reader(state, req, res)) return;
                    handle_delete_route(state, req, res);
                });
 }

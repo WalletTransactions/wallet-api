@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "icon_upload.hpp"
+#include "ledger_write_guard.hpp"
 #include "nlohmann/json.hpp"
 #include "provisioning.hpp"
 #include "session.hpp"
@@ -97,15 +98,20 @@ void handle_push(AppState& state, const httplib::Request& req, httplib::Response
         return;
     }
 
+    // Читатель леджера не пишет ни с телефона, ни из веба, ни через бота
+    // (ledger_write_guard.hpp). Батч без строк ничего не меняет — его
+    // пропускаем, чтобы клиент без локальных правок не ловил 403.
+    bool has_rows = false;
+    for (const auto& [table, rows] : changes.items()) {
+        if (!rows.is_array() || !rows.empty()) has_rows = true;
+    }
+    if (has_rows && !ledger_write_guard::can_write(ctx->role)) {
+        ledger_write_guard::reject(res);
+        return;
+    }
+
     sync_repo::PushMode mode = sync_repo::PushMode::Full;
     if (ctx->expense_only) {
-        // Читатель леджера не пишет и через бота (п. 6 §2 TODO_telegram_bot.md).
-        // Телефоны читателя этой проверкой пока не закрыты — отдельная задача
-        // там же.
-        if (ctx->role == "reader") {
-            json_error(res, 403, "reader_cannot_write");
-            return;
-        }
         mode = sync_repo::PushMode::CreateOperationsOnly;
     }
 
