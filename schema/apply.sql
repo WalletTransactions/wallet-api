@@ -35,6 +35,7 @@
 -- Владение данными.
 \ir table/ledger.sql
 \ir table/app_user.sql
+\ir table/user_settings.sql
 \ir table/ledger_member.sql
 \ir table/ledger_invite.sql
 \ir table/device.sql

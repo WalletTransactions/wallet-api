@@ -30,6 +30,9 @@ std::string required_scope(const std::string& method, const std::string& path) {
     bool read = method == "GET" || method == "HEAD";
 
     if (path == "/api/account") return "account";                     // DELETE — удаление аккаунта
+    // Личные настройки (change user-eq-currency, design D4): не данные леджера,
+    // роль reader не мешает; у токенов бота и MCP account нет.
+    if (path == "/api/settings") return "account";                    // GET/PUT
     if (path == "/sync/push") return "wallet:write";                  // или expense:write, см. alternative_scope
     if (path == "/sync/pull") return "wallet:read";
     if (starts_with(path, "/sync/blobs")) return read ? "wallet:read" : "wallet:write";

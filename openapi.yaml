@@ -79,6 +79,13 @@ tags:
       Самообслуживание — "Удалить аккаунт" (настройки wallet-web). Отдельно
       от `ledger` выше: та группа про ДОСТУП к общему леджеру, эта — про
       удаление ВСЕГО присутствия пользователя в этой базе разом.
+  - name: settings
+    description: |
+      Личные настройки пользователя (change user-eq-currency) — пока одна:
+      валюта эквивалента. Хранятся у пользователя, не у леджера
+      (`user_settings`), удаляются вместе с аккаунтом. Нужен scope `account`
+      (сессии веба и Android; у токенов бота и MCP его нет), роль в леджере
+      значения не имеет. Пишет веб, читает wallet-report (отдаёт MCP).
   - name: docs
     description: "Отдача этой самой спеки и Swagger UI поверх неё (src/docs.cpp) — не часть API, чисто мета"
 
@@ -855,6 +862,68 @@ paths:
         "204":
           description: Аккаунт удалён (или его и не было — идемпотентно)
 
+  /api/settings:
+    get:
+      operationId: getUserSettings
+      summary: Личные настройки пользователя
+      description: |
+        `eq_currency` — ISO-код валюты эквивалента или `null`, если не
+        выбрана (строки нет). Код мог исчезнуть из справочника после выбора —
+        тогда клиент берёт запасную валюту (EUR, затем первую).
+      tags: [settings]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `account` (`insufficient_scope`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Настройки
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/UserSettings"}}
+    put:
+      operationId: putUserSettings
+      summary: Сохранить или сбросить валюту эквивалента
+      description: |
+        Код приводится к верхнему регистру и должен быть среди живых валют,
+        видимых леджеру пользователя: общий справочник (`ledger_id IS NULL`)
+        и свои валюты леджера — те же, что `GET /api/reports/currencies`
+        (wallet-report). Без леджера годятся только общие; леджер не
+        создаётся. `null` — сброс. Неизвестный код — `400
+        {"error":"unknown_currency"}`, сохранённое значение не меняется.
+      tags: [settings]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserSettings"}
+            example: {eq_currency: eur}
+      responses:
+        "400":
+          description: |
+            Невалидный JSON, нет поля `eq_currency`, не строка и не `null`,
+            пустая строка (`field` = `eq_currency`) — или `unknown_currency`:
+            такой живой валюты леджеру не видно
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не аутентифицирован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Токен без `account` (`insufficient_scope`)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Сохранено; в ответе — сохранённое значение
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/UserSettings"}}
+
   /api/currency-pairs:
     get:
       operationId: listCurrencyPairs
@@ -1549,6 +1618,16 @@ components:
       properties:
         error: {type: string}
       required: [error]
+
+    UserSettings:
+      type: object
+      description: Личные настройки пользователя (`user_settings`).
+      properties:
+        eq_currency:
+          type: [string, "null"]
+          description: ISO-код валюты эквивалента (в ответе — в верхнем регистре); `null` — не выбрана / сброс
+          example: EUR
+      required: [eq_currency]
 
     Member:
       type: object

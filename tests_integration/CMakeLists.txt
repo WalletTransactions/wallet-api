@@ -56,6 +56,10 @@
 # test_default_currencies.cpp (change default-reference-currencies) — миграция 000039:
 # общий справочник валют и пар, повтор up/down в откатываемой транзакции; читает
 # манифест справочника из /src/migrations, новых исходников не требует.
+#
+# user_settings_repo.cpp (test_user_settings.cpp, change user-eq-currency) —
+# тот же принцип, что currencies_repo.cpp: HTTP-слой (user_settings.cpp) не
+# нужен; зависимость — только db.cpp.
 add_executable(wallet_api_integration_tests
     test_main.cpp
     test_push_batch.cpp
@@ -76,6 +80,7 @@ add_executable(wallet_api_integration_tests
     test_currency_routes_api.cpp
     test_db_reconnect.cpp
     test_icon_upload.cpp
+    test_user_settings.cpp
 
     ${CMAKE_SOURCE_DIR}/src/reference_icons_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/reference_icons.cpp
@@ -96,6 +101,7 @@ add_executable(wallet_api_integration_tests
     ${CMAKE_SOURCE_DIR}/src/currency_routes_repo.cpp
     ${CMAKE_SOURCE_DIR}/src/currency_routes.cpp
     ${CMAKE_SOURCE_DIR}/src/account_deletion_repo.cpp
+    ${CMAKE_SOURCE_DIR}/src/user_settings_repo.cpp
     ${WALLET_COMMON_DIR}/util/uuid.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
     ${WALLET_COMMON_DIR}/util/pg_recover.cpp
