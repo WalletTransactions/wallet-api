@@ -1,7 +1,10 @@
 # user-settings-api Specification
 
 ## Purpose
-TBD - created by archiving change user-eq-currency. Update Purpose after archive.
+Личные настройки пользователя, общие для всех его клиентов: пока одна —
+валюта эквивалента по умолчанию (ISO-код). Пишут веб и приложение
+(`/api/settings`, scope `account`), читает wallet-report для MCP и веба.
+Данные леджера здесь не хранятся.
 
 ## Requirements
 
