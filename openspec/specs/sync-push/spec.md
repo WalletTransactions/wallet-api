@@ -20,6 +20,10 @@
 - **WHEN** тело push не содержит `batch_id`
 - **THEN** ответ `400`, ничего не применено
 
+#### Scenario: batch_id не uuid
+- **WHEN** `batch_id` — не строка в формате uuid (например, `"b1"` или число)
+- **THEN** ответ `400` с `error` = `invalid_batch_id`, ничего не применено
+
 #### Scenario: Тело не JSON
 - **WHEN** тело push не разбирается как JSON
 - **THEN** ответ `400` с `error` = `invalid JSON body`

@@ -238,7 +238,11 @@ paths:
               properties:
                 batch_id:
                   type: string
-                  description: Ключ идемпотентности — обязателен, непустой
+                  format: uuid
+                  description: |
+                    Ключ идемпотентности — обязателен, uuid (генерирует клиент;
+                    в БД колонка `uuid`). Строка не в формате uuid — `400`
+                    `invalid_batch_id`.
                 device_name:
                   type: string
                   description: Необязательно — обновляет человекочитаемое имя устройства при провизионировании
@@ -248,7 +252,8 @@ paths:
       responses:
         "400":
           description: |
-            Некорректный JSON, отсутствует batch_id, changes — не объект,
+            Некорректный JSON, отсутствует batch_id, `batch_id` не uuid
+            (`error: invalid_batch_id`), changes — не объект,
             либо строка внутри `changes` не несёт обязательную для своей
             таблицы колонку (`error: invalid_row` — например, старая версия
             клиента ещё не отправляет колонку, добавленную в протокол
