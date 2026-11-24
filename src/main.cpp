@@ -259,6 +259,11 @@ int main() {
         return 1;
     }
     httplib::Server& svr = *svr_owner;
+    // Предел тела запроса вместо дефолтных 100 МБ httplib: тело читается целиком
+    // (после гейта токена) и парсится как JSON. Самое большое легитимное —
+    // порция push телефона (до 1000 строк, SyncEngine.MAX_PUSH_BATCH_ROWS) и
+    // blob иконки (до 1 МБ, blob.cpp); 8 МБ — с большим запасом. Больше — 413.
+    svr.set_payload_max_length(8u * 1024 * 1024);
     if (tls_settings.serve) applog::info("mTLS: сервер требует клиентский сертификат (INTERNAL_MTLS=true)");
     // Трейс-контекст, затем iss/aud/scope токена (access.hpp) — до
     // хендлеров, одной точкой на все маршруты.

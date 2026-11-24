@@ -21,6 +21,7 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 #include "provisioning.hpp"
+#include "sync.hpp"
 #include "sync_repo.hpp"
 #include "test_framework.hpp"
 #include "util/jwks.hpp"
@@ -468,4 +469,96 @@ TEST(routes_api_http_roundtrip_with_scope_gate) {
     auto again = client.Post("/api/currency-routes", rw, body.dump(), "application/json");
     REQUIRE(again);
     CHECK_EQ(again->status, 201);
+}
+
+// Читатель общего леджера (ledger_member.role = 'reader') не пишет, хотя у его
+// токена wallet:write: REST маршрутов — 403 reader_cannot_write, /sync/push со
+// строками — тоже 403 и ничего не применено; холостой push без строк проходит.
+TEST(reader_of_shared_ledger_cannot_write_via_rest_or_push) {
+    constexpr const char* kKid = "it-reader-write-kid";
+    TestRsaKey key;
+    std::string jwks_body = make_test_jwks(key, kKid);
+    LocalServer jwks_server([&](httplib::Server& s) {
+        s.Get("/.well-known/jwks.json", [&](const httplib::Request&, httplib::Response& res) {
+            res.set_content(jwks_body, "application/json");
+        });
+    });
+
+    AppState state;
+    state.jwks = std::make_unique<jwks::Cache>(jwks_server.base_url());
+    state.db_pool = std::make_unique<db::Pool>(fixture::database_url(), 2);
+    LocalServer api([&](httplib::Server& s) {
+        s.set_pre_routing_handler([&state](const httplib::Request& req, httplib::Response& res) {
+            return authz::gate(req, res, *state.jwks);
+        });
+        currency_routes_api::register_routes(s, state);
+        syncapi::register_routes(s, state);
+    });
+    httplib::Client client("127.0.0.1", api.port());
+
+    auto db = fixture::open();
+    std::string owner_sub = uuidgen::v4();
+    std::string ledger_id = provisioning::ensure_personal_ledger(*db, owner_sub, "it-owner@example.com");
+    auto l = ledger_of(db, ledger_id);
+    auto m = make_market(l);
+
+    std::string reader_sub = uuidgen::v4();
+    db->exec("INSERT INTO app_user (id, email) VALUES ($1, $2)", {reader_sub, "it-reader@example.com"});
+    db->exec("INSERT INTO ledger_member (ledger_id, user_id, role) VALUES ($1, $2, 'reader')", {ledger_id, reader_sub});
+
+    auto token = [&](const std::string& sub, const std::string& device_id) {
+        json claims = {{"sub", sub},
+                       {"email", sub + "@example.com"},
+                       {"iss", "google-auth"},
+                       {"aud", json::array({"wallet-api", "wallet-report", "google-auth"})},
+                       {"scope", "wallet:read wallet:write"},
+                       {"exp", epoch_now() + 900}};
+        if (!device_id.empty()) {
+            claims["device_id"] = device_id;
+            claims["platform"] = "android";
+        }
+        return httplib::Headers{{"Authorization", "Bearer " + make_test_jwt(key, kKid, claims)}};
+    };
+    auto reader_web = token(reader_sub, "");
+    auto reader_phone = token(reader_sub, uuidgen::v4());
+    auto owner_web = token(owner_sub, "");
+
+    // REST: создать маршрут читатель не может, владелец — может; удалить его читатель тоже не может.
+    json body = {{"currency_uuids", json::array({m.btc, m.eur, m.rub})}};
+    auto forbidden = client.Post("/api/currency-routes", reader_web, body.dump(), "application/json");
+    REQUIRE(forbidden);
+    CHECK_EQ(forbidden->status, 403);
+    CHECK_EQ(json::parse(forbidden->body).at("error").get<std::string>(), std::string("reader_cannot_write"));
+    CHECK_EQ(live_steps(l), 0);
+
+    auto created = client.Post("/api/currency-routes", owner_web, body.dump(), "application/json");
+    REQUIRE(created);
+    CHECK_EQ(created->status, 201);
+    auto reader_delete = client.Delete(("/api/currency-routes/" + m.btc + "/" + m.rub).c_str(), reader_web);
+    REQUIRE(reader_delete);
+    CHECK_EQ(reader_delete->status, 403);
+    CHECK_EQ(live_steps(l), 2);
+
+    // Чтение читателю доступно.
+    auto list = client.Get("/api/currency-routes", reader_web);
+    REQUIRE(list);
+    CHECK_EQ(list->status, 200);
+
+    // /sync/push с телефона читателя: строка удаления пары — 403, пара жива.
+    json push = {{"batch_id", uuidgen::v4()},
+                 {"changes", {{"currency_pair", json::array({{{"uuid", m.p_btceur}, {"deleted", true}}})}}}};
+    auto pushed = client.Post("/sync/push", reader_phone, push.dump(), "application/json");
+    REQUIRE(pushed);
+    CHECK_EQ(pushed->status, 403);
+    CHECK_EQ(json::parse(pushed->body).at("error").get<std::string>(), std::string("reader_cannot_write"));
+    CHECK_EQ(db->exec("SELECT count(*) FROM currency_pair WHERE uuid = $1 AND deleted_at IS NULL", {m.p_btceur})
+                 .rows.at(0)
+                 .fields.at(0),
+             std::string("1"));
+
+    // Холостой push без строк — не запись, проходит.
+    json idle = {{"batch_id", uuidgen::v4()}, {"changes", {{"operation", json::array()}}}};
+    auto idle_res = client.Post("/sync/push", reader_phone, idle.dump(), "application/json");
+    REQUIRE(idle_res);
+    CHECK_EQ(idle_res->status, 200);
 }

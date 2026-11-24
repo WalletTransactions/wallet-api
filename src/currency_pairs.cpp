@@ -5,6 +5,7 @@
 #include "currency_pairs_repo.hpp"
 #include "db.hpp"
 #include "invites_repo.hpp"
+#include "ledger_write_guard.hpp"
 #include "nlohmann/json.hpp"
 #include "provisioning.hpp"
 #include "session.hpp"
@@ -284,19 +285,23 @@ void handle_delete_rate(AppState& state, const httplib::Request& req, httplib::R
 
 } // namespace
 
+// Пишущие маршруты закрыты для читателя леджера (ledger_write_guard.hpp).
 void register_routes(httplib::Server& svr, AppState& state) {
     svr.Get("/api/currency-pairs", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_list_pairs(state, req, res);
     });
     svr.Post("/api/currency-pairs", [&state](const httplib::Request& req, httplib::Response& res) {
+        if (ledger_write_guard::reject_reader(state, req, res)) return;
         handle_create_pair(state, req, res);
     });
     svr.Patch("/api/currency-pairs/:uuid",
               [&state](const httplib::Request& req, httplib::Response& res) {
+                  if (ledger_write_guard::reject_reader(state, req, res)) return;
                   handle_update_pair(state, req, res);
               });
     svr.Delete("/api/currency-pairs/:uuid",
                [&state](const httplib::Request& req, httplib::Response& res) {
+                   if (ledger_write_guard::reject_reader(state, req, res)) return;
                    handle_delete_pair(state, req, res);
                });
     svr.Get("/api/currency-pairs/:uuid/rates",
@@ -305,10 +310,12 @@ void register_routes(httplib::Server& svr, AppState& state) {
             });
     svr.Post("/api/currency-pairs/:uuid/rates",
              [&state](const httplib::Request& req, httplib::Response& res) {
+                 if (ledger_write_guard::reject_reader(state, req, res)) return;
                  handle_upsert_rate(state, req, res);
              });
     svr.Delete("/api/currency-pairs/:uuid/rates/:date",
                [&state](const httplib::Request& req, httplib::Response& res) {
+                   if (ledger_write_guard::reject_reader(state, req, res)) return;
                    handle_delete_rate(state, req, res);
                });
 }
