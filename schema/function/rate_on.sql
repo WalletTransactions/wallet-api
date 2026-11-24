@@ -23,23 +23,32 @@ AS $$
                -- Необходимое условие непустого rate_fallback, дешёвое и без plpgsql (wallet-api#51): явный
                -- маршрут между from и to ИЛИ у обеих валют есть живая пара с курсом (иначе плечо кросса через
                -- USD не найдётся). Нет условия — rate_fallback не вызывается вовсе: вызов plpgsql-функции
-               -- (4–5 запросов) стоил больше всего остального поиска курса.
+               -- (4–5 запросов) стоил больше всего остального поиска курса. «Есть курс у пары» — скалярный
+               -- подзапрос с LATERAL … LIMIT 1: индексный поиск по каждой паре и выход на первой найденной.
+               -- Вложенный EXISTS планировщик превращает в полусоединение с HashAggregate по ВСЕМ курсам
+               -- (0.13 мс на строку и растёт с историей), а LIMIT 1 внутри EXISTS он просто вырезает. ORDER BY date DESC
+               -- — чтобы поиск шёл по ix_currency_pair_rate_lookup, а не последовательным чтением курсов (без него
+               -- планировщик на пустой паре читает таблицу целиком).
                EXISTS (SELECT 1 FROM currency_conversion cc
                         WHERE cc.ledger_id = p_ledger AND cc.deleted_at IS NULL AND cc.num = 1
                           AND ((cc.from_currency_uuid = p_from AND cc.to_currency_uuid = p_to)
                             OR (cc.from_currency_uuid = p_to   AND cc.to_currency_uuid = p_from)))
-               OR (EXISTS (SELECT 1 FROM currency_pair cp
-                            WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_from OR cp.quote_currency_uuid = p_from)
-                              AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
-                              AND EXISTS (SELECT 1 FROM currency_pair_rate r
+               OR ((SELECT 1 FROM currency_pair cp
+                      CROSS JOIN LATERAL (SELECT 1 FROM currency_pair_rate r
                                            WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
-                                             AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger)))
-                   AND EXISTS (SELECT 1 FROM currency_pair cp
-                                WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_to OR cp.quote_currency_uuid = p_to)
-                                  AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
-                                  AND EXISTS (SELECT 1 FROM currency_pair_rate r
-                                               WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
-                                                 AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger))))
+                                             AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger)
+                                           ORDER BY r."date" DESC LIMIT 1) rr
+                     WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_from OR cp.quote_currency_uuid = p_from)
+                       AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                     LIMIT 1) IS NOT NULL
+                   AND (SELECT 1 FROM currency_pair cp
+                      CROSS JOIN LATERAL (SELECT 1 FROM currency_pair_rate r
+                                           WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                             AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger)
+                                           ORDER BY r."date" DESC LIMIT 1) rr
+                     WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_to OR cp.quote_currency_uuid = p_to)
+                       AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                     LIMIT 1) IS NOT NULL)
            ) gd
      CROSS JOIN LATERAL rate_fallback(p_ledger, p_from, p_to, p_date) f
     LIMIT 1
