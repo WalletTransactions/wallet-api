@@ -4,6 +4,7 @@
 #include <optional>
 #include <vector>
 
+#include "currencies_repo.hpp"
 #include "icon_upload.hpp"
 #include "ledger_write_guard.hpp"
 #include "nlohmann/json.hpp"
@@ -87,11 +88,23 @@ void handle_push(AppState& state, const httplib::Request& req, httplib::Response
         return;
     }
 
-    std::string batch_id = body.value("batch_id", std::string{});
-    if (batch_id.empty()) {
+    // batch_id — uuid (колонка sync_push_batch.batch_id: uuid). Не-строка или
+    // строка не в формате uuid дала бы 500 (type_error / Postgres 22P02), поэтому
+    // отсекаем здесь: 400 invalid_batch_id.
+    auto batch_it = body.is_object() ? body.find("batch_id") : body.end();
+    if (!body.is_object() || batch_it == body.end() || batch_it->is_null() ||
+        (batch_it->is_string() && batch_it->get<std::string>().empty())) {
         json_error(res, 400, "batch_id обязателен (идемпотентность отправки, см. README)");
         return;
     }
+    if (!batch_it->is_string() || !currencies_repo::is_uuid(batch_it->get<std::string>())) {
+        res.status = 400;
+        res.set_content(
+            json{{"error", "invalid_batch_id"}, {"detail", "batch_id должен быть uuid"}}.dump(),
+            kJsonContentType);
+        return;
+    }
+    std::string batch_id = batch_it->get<std::string>();
     json changes = body.value("changes", json::object());
     if (!changes.is_object()) {
         json_error(res, 400, "changes должен быть объектом {\"<таблица>\": [...]}");

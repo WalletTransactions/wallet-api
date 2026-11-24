@@ -179,6 +179,27 @@ TEST(icon_upload_blob_respects_flag_and_admin_role) {
     CHECK(blob_exists(*db, body));
 }
 
+// batch_id не uuid — 400 invalid_batch_id, а не 500 от Postgres (22P02).
+TEST(push_rejects_non_uuid_batch_id_with_400) {
+    Harness h;
+    auto auth = h.token("user");
+    h.pull(auth); // провижининг леджера и устройства
+
+    for (const char* bad : {"b1", "not-a-uuid", "123"}) {
+        auto res = h.push(auth, bad, json::object());
+        REQUIRE(res);
+        CHECK_EQ(res->status, 400);
+        CHECK_EQ(json::parse(res->body).value("error", std::string{}), std::string("invalid_batch_id"));
+    }
+
+    // Не строка — тоже 400, не падение разбора.
+    json body = {{"batch_id", 123}, {"changes", json::object()}};
+    auto num = h.client->Post("/sync/push", auth, body.dump(), "application/json");
+    REQUIRE(num);
+    CHECK_EQ(num->status, 400);
+    CHECK_EQ(json::parse(num->body).value("error", std::string{}), std::string("invalid_batch_id"));
+}
+
 TEST(icon_upload_push_drops_icons_applies_rest_and_replays) {
     Harness h;
     auto db = fixture::open();
