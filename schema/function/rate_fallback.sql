@@ -29,13 +29,34 @@ DECLARE
     v_cnt     int;
     v_ok      boolean;
     v_at      uuid;
+    v_ad      date;
+    v_ar      numeric;
+    v_bd      date;
+    v_br      numeric;
     s         record;
     x         record;
 BEGIN
     -- 0. прямой курс есть (хоть на какую-то дату) — маршрут не применяется
-    IF EXISTS (SELECT 1 FROM v_currency_conversion_rate d
-                WHERE d.from_currency_uuid = p_from AND d.to_currency_uuid = p_to
-                  AND (d.ledger_id IS NULL OR d.ledger_id = p_ledger)) THEN
+    -- Прямая или обратная пара с живым курсом на любую дату, либо тождественный курс валюты. Те же условия,
+    -- что в rate_direct, но без выбора «лучшего» курса и без развёртки вьюхи v_currency_conversion — только
+    -- факт существования, по индексу ix_currency_pair_rate_lookup (раньше читалась вся вьюха курсов, wallet-api#51).
+    IF EXISTS (SELECT 1
+                 FROM currency_pair cp
+                WHERE cp.deleted_at IS NULL
+                  AND ((cp.base_currency_uuid = p_from AND cp.quote_currency_uuid = p_to)
+                    OR (cp.base_currency_uuid = p_to   AND cp.quote_currency_uuid = p_from))
+                  AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                  AND EXISTS (SELECT 1 FROM currency c WHERE c.uuid = cp.base_currency_uuid  AND c.deleted_at IS NULL)
+                  AND EXISTS (SELECT 1 FROM currency c WHERE c.uuid = cp.quote_currency_uuid AND c.deleted_at IS NULL)
+                  AND EXISTS (SELECT 1
+                                FROM currency_pair_rate r
+                               WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                 AND (cp.ledger_id IS NULL OR r.ledger_id IS NULL OR r.ledger_id = cp.ledger_id)
+                                 AND (COALESCE(r.ledger_id, cp.ledger_id) IS NULL
+                                      OR COALESCE(r.ledger_id, cp.ledger_id) = p_ledger)))
+       OR (p_from = p_to AND EXISTS (SELECT 1 FROM currency c
+                                      WHERE c.uuid = p_from AND c.deleted_at IS NULL
+                                        AND (c.ledger_id IS NULL OR c.ledger_id = p_ledger))) THEN
         RETURN;
     END IF;
 
@@ -104,15 +125,13 @@ BEGIN
      LIMIT 1;
     IF v_usd IS NULL OR p_from = v_usd OR p_to = v_usd THEN RETURN; END IF;
 
-    RETURN QUERY
-    SELECT greatest(a."date", b."date"), a.rate * b.rate
-      FROM (SELECT rr."date", rr.rate FROM v_currency_conversion_rate rr
-             WHERE rr.from_currency_uuid = p_from AND rr.to_currency_uuid = v_usd
-               AND rr."date" <= p_date AND (rr.ledger_id IS NULL OR rr.ledger_id = p_ledger)
-             ORDER BY rr."date" DESC, (rr.ledger_id IS NULL) LIMIT 1) a,
-           (SELECT rr."date", rr.rate FROM v_currency_conversion_rate rr
-             WHERE rr.from_currency_uuid = v_usd AND rr.to_currency_uuid = p_to
-               AND rr."date" <= p_date AND (rr.ledger_id IS NULL OR rr.ledger_id = p_ledger)
-             ORDER BY rr."date" DESC, (rr.ledger_id IS NULL) LIMIT 1) b;
+    -- Плечи по очереди: нет первого — второе не считаем (оба нужны, иначе курса нет).
+    SELECT d."date", d.rate INTO v_ad, v_ar FROM rate_direct(p_ledger, p_from, v_usd, p_date) d;
+    IF NOT FOUND THEN RETURN; END IF;
+    SELECT d."date", d.rate INTO v_bd, v_br FROM rate_direct(p_ledger, v_usd, p_to, p_date) d;
+    IF NOT FOUND THEN RETURN; END IF;
+    rate_date := greatest(v_ad, v_bd);
+    rate := v_ar * v_br;
+    RETURN NEXT;
 END
 $$;
