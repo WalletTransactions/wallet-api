@@ -5,16 +5,34 @@
 -- сортирует: шаг 0 «есть ли прямой курс на какую-нибудь дату» и оба плеча кросса через USD.
 -- Стало: прямой курс вынесен в rate_direct (тот же индексный LATERAL … LIMIT 1, что был внутри rate_on,
 -- миграция 000044), rate_on и плечи USD берут его; шаг 0 — EXISTS по паре и курсам без развёртки вьюхи;
--- плечи кросса считаются по очереди (нет первого — второе не считаем).
+-- плечи кросса считаются по очереди (нет первого — второе не считаем). Главное — rate_on вызывает
+-- rate_fallback (plpgsql, 4–5 запросов: сам по себе дороже всего остального поиска курса) только если
+-- выполнено необходимое условие непустого результата (явный маршрут между валютами ИЛИ у обеих валют есть
+-- живая пара с курсом); иначе — вообще без вызова. Замер (одноразовый postgres, 900 дней курсов): операция
+-- без курса 0.29 → 0.025 мс (прямой курс 0.12 мс), в т. ч. когда пары у валют есть, а курсов нет.
 --
 -- Контракт и приоритеты те же (прямой курс → явный маршрут → кросс через USD; «валидный маршрут без курса
 -- у шага блокирует USD»; ledger поверх общего при равных датах), сигнатуры rate_on/rate_fallback,
 -- потребители и привилегии не меняются: CREATE OR REPLACE.
 -- Результат сверен со старыми функциями на случайных данных (два леджера со своими валютами и своей USD,
 -- общие и леджерные пары и курсы на одни даты, обратные пары, маршруты 1–3 шага (в т. ч. сломанные),
--- удалённые пары/курсы/шаги/валюты): 8460 проб (леджер × из × в × дата), 3739 с курсом, 455 троек с
--- веткой rate_fallback, 90 с явным маршрутом — 0 расхождений.
+-- удалённые пары/курсы/шаги/валюты): 4 набора по 8460 проб (леджер × из × в × дата), ≈3400–3700 с курсом, 455 троек
+-- с веткой rate_fallback, 90 с явным маршрутом — 0 расхождений.
 
+-- Прямой курс from -> to леджера на дату: последний не позже даты, при равных
+-- датах курс леджера поверх общего. Без маршрута и кросса через USD — только
+-- прямая или обратная пара и тождественный курс валюты на саму себя. Нет курса —
+-- ни одной строки.
+--
+-- Общая часть rate_on (первый приоритет) и rate_fallback (проверка «есть ли прямой
+-- курс вообще» и два плеча кросса через USD): по каждой подходящей паре ОДИН
+-- последний курс не позже даты по индексу ix_currency_pair_rate_lookup (пара,
+-- дата DESC) через LATERAL … LIMIT 1, затем лучший из них. Раньше rate_fallback
+-- читал v_currency_conversion_rate с ORDER BY … LIMIT 1 — планировщик строит всю
+-- вьюху (все курсы пары) и сортирует, на каждую операцию без прямого курса
+-- (wallet-api#51).
+--
+-- p_date = 'infinity' даёт «есть ли курс на какую-нибудь дату».
 -- Прямой курс from -> to леджера на дату: последний не позже даты, при равных
 -- датах курс леджера поверх общего. Без маршрута и кросса через USD — только
 -- прямая или обратная пара и тождественный курс валюты на саму себя. Нет курса —
@@ -224,7 +242,31 @@ STABLE
 AS $$
     (SELECT d."date", d.rate FROM rate_direct(p_ledger, p_from, p_to, p_date) d)
     UNION ALL
-    SELECT f.rate_date, f.rate FROM rate_fallback(p_ledger, p_from, p_to, p_date) f
+    SELECT f.rate_date, f.rate
+      FROM (SELECT 1
+             WHERE
+               -- Необходимое условие непустого rate_fallback, дешёвое и без plpgsql (wallet-api#51): явный
+               -- маршрут между from и to ИЛИ у обеих валют есть живая пара с курсом (иначе плечо кросса через
+               -- USD не найдётся). Нет условия — rate_fallback не вызывается вовсе: вызов plpgsql-функции
+               -- (4–5 запросов) стоил больше всего остального поиска курса.
+               EXISTS (SELECT 1 FROM currency_conversion cc
+                        WHERE cc.ledger_id = p_ledger AND cc.deleted_at IS NULL AND cc.num = 1
+                          AND ((cc.from_currency_uuid = p_from AND cc.to_currency_uuid = p_to)
+                            OR (cc.from_currency_uuid = p_to   AND cc.to_currency_uuid = p_from)))
+               OR (EXISTS (SELECT 1 FROM currency_pair cp
+                            WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_from OR cp.quote_currency_uuid = p_from)
+                              AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                              AND EXISTS (SELECT 1 FROM currency_pair_rate r
+                                           WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                             AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger)))
+                   AND EXISTS (SELECT 1 FROM currency_pair cp
+                                WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_to OR cp.quote_currency_uuid = p_to)
+                                  AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                                  AND EXISTS (SELECT 1 FROM currency_pair_rate r
+                                               WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                                 AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger))))
+           ) gd
+     CROSS JOIN LATERAL rate_fallback(p_ledger, p_from, p_to, p_date) f
     LIMIT 1
 $$;
 

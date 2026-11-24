@@ -17,7 +17,31 @@ STABLE
 AS $$
     (SELECT d."date", d.rate FROM rate_direct(p_ledger, p_from, p_to, p_date) d)
     UNION ALL
-    SELECT f.rate_date, f.rate FROM rate_fallback(p_ledger, p_from, p_to, p_date) f
+    SELECT f.rate_date, f.rate
+      FROM (SELECT 1
+             WHERE
+               -- Необходимое условие непустого rate_fallback, дешёвое и без plpgsql (wallet-api#51): явный
+               -- маршрут между from и to ИЛИ у обеих валют есть живая пара с курсом (иначе плечо кросса через
+               -- USD не найдётся). Нет условия — rate_fallback не вызывается вовсе: вызов plpgsql-функции
+               -- (4–5 запросов) стоил больше всего остального поиска курса.
+               EXISTS (SELECT 1 FROM currency_conversion cc
+                        WHERE cc.ledger_id = p_ledger AND cc.deleted_at IS NULL AND cc.num = 1
+                          AND ((cc.from_currency_uuid = p_from AND cc.to_currency_uuid = p_to)
+                            OR (cc.from_currency_uuid = p_to   AND cc.to_currency_uuid = p_from)))
+               OR (EXISTS (SELECT 1 FROM currency_pair cp
+                            WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_from OR cp.quote_currency_uuid = p_from)
+                              AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                              AND EXISTS (SELECT 1 FROM currency_pair_rate r
+                                           WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                             AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger)))
+                   AND EXISTS (SELECT 1 FROM currency_pair cp
+                                WHERE cp.deleted_at IS NULL AND (cp.base_currency_uuid = p_to OR cp.quote_currency_uuid = p_to)
+                                  AND (cp.ledger_id IS NULL OR cp.ledger_id = p_ledger)
+                                  AND EXISTS (SELECT 1 FROM currency_pair_rate r
+                                               WHERE r.currency_pair_uuid = cp.uuid AND r.deleted_at IS NULL
+                                                 AND (r.ledger_id IS NULL OR r.ledger_id = p_ledger))))
+           ) gd
+     CROSS JOIN LATERAL rate_fallback(p_ledger, p_from, p_to, p_date) f
     LIMIT 1
 $$;
 
